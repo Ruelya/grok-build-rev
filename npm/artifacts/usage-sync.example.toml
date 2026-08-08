@@ -1,0 +1,17 @@
+# Copy to ~/.grok/usage/sync.toml
+# Mirrors a typical WebDAV UI: server · account · password · remote root · profile · auto
+
+enabled = false
+auto_sync = true
+
+# Server root only — remote_root + profile are appended automatically.
+# Example pCloud:  url = "https://ewebdav.pcloud.com"
+# Effective path:  {url}/{remote_root}/{profile}/devices/<id>/snapshot.json
+url = "https://dav.example.com"
+username = ""
+password_env = "GROK_USAGE_WEBDAV_PASSWORD"
+# password = ""
+
+# Defaults (always applied if omitted)
+remote_root = "grok-usage-sync"
+profile = "default"

@@ -1,0 +1,52 @@
+{
+  "name": "@ruelya/grok-build",
+  "version": "1.0.0",
+  "description": "Grok Build fork (rev). npm install replaces the official client.",
+  "type": "module",
+  "bin": {
+    "grok": "bin/grok.mjs",
+    "grok-build": "bin/install.mjs"
+  },
+  "scripts": {
+    "postinstall": "node bin/postinstall.mjs",
+    "install-client": "node bin/install.mjs install",
+    "status": "node bin/install.mjs status",
+    "restore": "node bin/install.mjs restore"
+  },
+  "files": [
+    "bin",
+    "artifacts/bin",
+    "artifacts/themes",
+    "artifacts/BUILD_INFO.txt",
+    "artifacts/config-fork-notes.toml",
+    "artifacts/usage-sync.example.toml",
+    "config_example.toml",
+    "README.md",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "license": "SEE LICENSE IN SOURCE TREE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ruelya/grok-build-rev.git"
+  },
+  "homepage": "https://github.com/Ruelya/grok-build-rev#readme",
+  "bugs": {
+    "url": "https://github.com/Ruelya/grok-build-rev/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

@@ -1,0 +1,63 @@
+# =============================================================================
+# >>> fork-fork-config-notes
+# fork fork — configuration notes (comments only; defaults keep official behavior)
+# Binary brand:  grok <ver>-fork (<sha>) [fork] …
+# Install patch: this package (scripts/patch-installed.sh)
+# Full field catalog: config_example.toml (package root)
+# Safe to edit or delete this entire block.
+# =============================================================================
+#
+# --- Toolset style (main session + subagents) ---------------------------------
+# Unset / omitted / unknown name  =>  each agent keeps its OWN default tool list.
+# When set to a known preset, the tool list is replaced for:
+#   • main session agent
+#   • subagents (applied after harness toolset resolution)
+#
+# Known style names:
+#   grok-build | grok-build-concise | grok-build-plan
+#   codex | explore | plan | grok-computer
+#
+# [toolset]
+# style = "explore"
+#
+# --- Subagent catalog (fork default: fully open) ----------------------------
+# Official default exposes only general-purpose / explore / plan as Task subagents.
+# fork opens ALL built-in agent types by default. Hide individuals here:
+#
+# [subagents.toggle]
+# # browser-use = false
+# # codex = false
+#
+# --- Themes (~/.grok/themes/*.toml from install patch) ------------------------
+# Signature: Lonetrail / Lonetrail-light
+#   Translunar Band is NOT a decorative strip — five brand hues map to UI roles
+#   (user / thinking / success / tool / assistant). Context usage bar blends
+#   cool→warm through those accents (functional pressure signal).
+# OpenCode built-ins ported: nord, dracula, tokyonight, gruvbox, catppuccin,
+#   everforest, ayu, kanagawa, one-dark, rosepine, solarized, matrix, …
+#   (+ most *-light variants). /theme <name>
+#
+# [ui]
+# # theme = "Lonetrail"
+#
+# --- API backend: responses vs openai_responses -------------------------------
+# "responses"         — xAI-oriented Responses wire
+# "openai_responses"  — OpenAI-compatible / AxonHub; same /v1/responses
+#                       Type-level loose accept (missing annotations/id/status)
+#                       — no synthetic JSON fill (Codex / Vercel AI style)
+#
+# [model."proxy"]
+# api_backend = "openai_responses"
+# auto_prompt_cache_key = true
+#
+# --- Prompt cache key (opt-in; Responses family only) -------------------------
+# [model."your-model-id"]
+# # auto_prompt_cache_key = true
+#
+# --- Recap model (optional) ---------------------------------------------------
+# Override > OAuth official default > current session model
+# [models]
+# # recap = "grok-4.5"
+#
+# <<< fork-fork-config-notes
+# =============================================================================

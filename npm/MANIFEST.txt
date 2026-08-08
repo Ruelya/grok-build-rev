@@ -1,0 +1,21 @@
+Grok Build Fork — npm package
+=============================
+
+Install (only supported path):
+  npm install -g .
+  → replaces ~/.grok/bin/grok (all platforms)
+
+Multi-platform binaries:
+  artifacts/bin/win32-x64/grok.exe
+  artifacts/bin/darwin-arm64/grok
+  artifacts/bin/darwin-x64/grok
+  artifacts/bin/linux-x64/grok
+  artifacts/bin/linux-arm64/grok
+
+CLI:
+  bin/postinstall.mjs   npm lifecycle
+  bin/install.mjs       install | status | restore
+  bin/grok.mjs          npm bin shim → native client
+  bin/platform.mjs      platform detection
+
+Docs: README.md · INSTALL.md · docs/
