@@ -1,6 +1,9 @@
 # Publish @ruelya/grok-build with npm Trusted Publisher (OIDC).
 # No NPM_TOKEN. Configure Trusted Publisher on npmjs for this repo + workflow.
 # Version conflicts: auto patch-bump and retry.
+#
+# darwin-x64: cross-compile from macos-latest (arm64) via x86_64-apple-darwin.
+# Avoids scarce/queued macos-13 Intel runners.
 
 name: publish
 
@@ -26,7 +29,7 @@ on:
 
 concurrency:
   group: publish-npm
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -43,18 +46,24 @@ jobs:
         include:
           - os: windows-latest
             key: win32-x64
+            rust_target: ""
             exe: xai-grok-pager.exe
             out: grok.exe
           - os: ubuntu-latest
             key: linux-x64
+            rust_target: ""
             exe: xai-grok-pager
             out: grok
-          - os: macos-13
-            key: darwin-x64
-            exe: xai-grok-pager
-            out: grok
+          # Apple Silicon host — native arm64 binary
           - os: macos-latest
             key: darwin-arm64
+            rust_target: ""
+            exe: xai-grok-pager
+            out: grok
+          # Same arm64 host — cross-compile Intel Mac (no macos-13)
+          - os: macos-latest
+            key: darwin-x64
+            rust_target: x86_64-apple-darwin
             exe: xai-grok-pager
             out: grok
     runs-on: ${{ matrix.os }}
@@ -67,6 +76,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -77,10 +88,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build -p xai-grok-pager-bin --release
+          TARGET="${{ matrix.rust_target }}"
+          if [[ -n "$TARGET" ]]; then
+            cargo build -p xai-grok-pager-bin --release --target "$TARGET"
+            SRC="target/${TARGET}/release/${{ matrix.exe }}"
+          else
+            cargo build -p xai-grok-pager-bin --release
+            SRC="target/release/${{ matrix.exe }}"
+          fi
           mkdir -p "npm/artifacts/bin/${{ matrix.key }}"
-          cp -f "target/release/${{ matrix.exe }}" "npm/artifacts/bin/${{ matrix.key }}/${{ matrix.out }}"
+          cp -f "$SRC" "npm/artifacts/bin/${{ matrix.key }}/${{ matrix.out }}"
           chmod +x "npm/artifacts/bin/${{ matrix.key }}/${{ matrix.out }}" || true
+          file "npm/artifacts/bin/${{ matrix.key }}/${{ matrix.out }}" || true
           ls -la "npm/artifacts/bin/${{ matrix.key }}/${{ matrix.out }}"
 
       - uses: actions/upload-artifact@v4
