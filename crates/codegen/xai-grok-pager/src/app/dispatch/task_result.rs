@@ -1093,6 +1093,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::UsageActivityComplete {
+            agent_id,
+            session_id,
+            modal,
+        } => crate::app::dispatch::status::handle_usage_activity_complete(
+            app,
+            agent_id,
+            session_id,
+            modal,
+        ),
         TaskResult::SessionUsageComplete {
             agent_id,
             session_id,

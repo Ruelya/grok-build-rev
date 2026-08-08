@@ -647,6 +647,15 @@ impl AgentView {
         } else {
             None
         };
+        // Live cost on the subagent frame (prompt is hidden for child views).
+        let cost_label: Option<String> = self.subagent_views.get_mut(child_sid).and_then(|cv| {
+            cv.refresh_session_cost_label();
+            if cv.session_cost_label.is_empty() {
+                None
+            } else {
+                Some(cv.session_cost_label.clone())
+            }
+        });
         let title_x = padded.x + 1;
         buf.set_span_safe(
             title_x,
@@ -663,11 +672,16 @@ impl AgentView {
         } else {
             badge.width() as u16 + 1
         };
+        let cost_width: u16 = cost_label
+            .as_deref()
+            .map(|s| s.width() as u16 + 3)
+            .unwrap_or(0);
         let activity_width: u16 = activity_label
             .as_deref()
             .map(|s| s.width() as u16 + 3)
             .unwrap_or(0);
         let right_width = activity_width
+            + cost_width
             + elapsed_text.width() as u16
             + 1
             + close_width
@@ -749,6 +763,17 @@ impl AgentView {
                 rx,
                 title_y,
                 &Span::styled(segment, Style::default().fg(theme.gray)),
+                w,
+            );
+        }
+        if let Some(cost) = cost_label.as_deref() {
+            let segment = format!("{cost} \u{00b7} ");
+            let w = segment.width() as u16;
+            rx = rx.saturating_sub(w);
+            buf.set_span_safe(
+                rx,
+                title_y,
+                &Span::styled(segment, Style::default().fg(theme.accent_success)),
                 w,
             );
         }
@@ -988,11 +1013,16 @@ impl AgentView {
                 Some(c)
             } else if effective_plan || casual_commenting {
                 Some(theme.accent_plan)
+            } else if self.session.is_yolo() {
+                // Always-approve: amber caution accent on the prompt rail.
+                Some(theme.warning)
             } else {
                 None
             },
             border_color_override: if effective_plan || casual_commenting {
                 crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
+            } else if self.session.is_yolo() {
+                crate::render::color::blend_color(theme.bg_base, theme.warning, 0.4)
             } else {
                 None
             },
@@ -2311,7 +2341,14 @@ impl AgentView {
                 } else {
                     remaining as f32 / MODE_BANNER_FADE_TICKS as f32
                 };
-                let base_fg = theme.text_secondary;
+                // Color the transient "Switched to mode: …" line by mode.
+                let mode_label = msg
+                    .strip_prefix("Switched to mode: ")
+                    .unwrap_or(msg.as_str());
+                let base_fg = crate::views::prompt_widget::session_mode_badge_color(
+                    &theme, mode_label,
+                )
+                .unwrap_or(theme.text_secondary);
                 let fg = crate::render::color::blend_color(theme.bg_base, base_fg, opacity)
                     .unwrap_or(base_fg);
                 let text = format!("  {}", msg);
@@ -2456,25 +2493,21 @@ impl AgentView {
             } else {
                 "plan"
             };
-            mode_flags_vec.push(PromptFlag {
-                text: plan_label,
-                color: Some(theme.accent_plan),
-                bold: false,
-            });
+            mode_flags_vec.push(crate::views::prompt_widget::session_mode_flag(
+                &theme,
+                plan_label,
+            ));
         }
         if self.session.is_yolo() && !effective_plan {
-            mode_flags_vec.push(PromptFlag {
-                text: "always-approve",
-                color: None,
-                bold: false,
-            });
+            mode_flags_vec.push(crate::views::prompt_widget::session_mode_flag(
+                &theme,
+                "always-approve",
+            ));
         }
         if self.auto_flag_visible(effective_plan) {
-            mode_flags_vec.push(PromptFlag {
-                text: "auto",
-                color: Some(theme.accent_system),
-                bold: false,
-            });
+            mode_flags_vec.push(crate::views::prompt_widget::session_mode_flag(
+                &theme, "auto",
+            ));
         }
         let mode_flags: &[PromptFlag] = &mode_flags_vec;
         let multiline = self.multiline_mode;
@@ -2493,9 +2526,21 @@ impl AgentView {
             Some(eff) => format!("{model_id} ({eff})"),
             None => model_id,
         };
+        // Refresh label against current pricing.toml (toggle / mode changes).
+        self.refresh_session_cost_label();
+        let pricing = crate::usage_activity::load_pricing_config();
+        let show_live_cost = pricing.live_display
+            && !matches!(pricing.mode, crate::usage_activity::CostMode::Off)
+            && !self.session_cost_label.is_empty();
+        let live_cost = if show_live_cost {
+            Some(self.session_cost_label.as_str())
+        } else {
+            None
+        };
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
                 model_name: &model_label,
+                live_cost,
                 flags: mode_flags,
                 multiline,
                 usage_warning,
@@ -2506,6 +2551,7 @@ impl AgentView {
                 editing_label = format!("editing queued #{pos}");
                 PromptInfo {
                     model_name: &editing_label,
+                    live_cost,
                     flags: mode_flags,
                     multiline,
                     usage_warning,
@@ -2516,6 +2562,7 @@ impl AgentView {
         let info = if let Some(label) = self.prompt_input_mode.prompt_info_override() {
             PromptInfo {
                 model_name: label,
+                live_cost,
                 flags: &[],
                 multiline: false,
                 usage_warning,

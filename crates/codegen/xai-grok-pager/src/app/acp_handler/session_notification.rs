@@ -216,8 +216,12 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             prompt_id,
             stop_reason,
             agent_result,
-            ..
+            usage,
         } => {
+            // Live cost: accumulate even during replay so resume shows session $.
+            if let Some(ref usage) = usage {
+                agent.apply_turn_usage_cost(&prompt_id, usage);
+            }
             if agent.session.loading_replay {
                 agent.replayed_terminal_prompts.insert(prompt_id);
                 false
@@ -1164,6 +1168,22 @@ pub(super) fn handle_child_session_notification(
                     &mut child_view.scrollback,
                     is_api_key_auth,
                 )
+            } else {
+                false
+            }
+        }
+        // Live cost for subagents: accumulate on the child view (prompt is
+        // hidden in subagent frames; title bar reads `session_cost_label`).
+        XaiSessionUpdate::TurnCompleted {
+            prompt_id,
+            usage,
+            ..
+        } => {
+            if let Some(child_view) = agent.subagent_views.get_mut(child_sid) {
+                if let Some(ref usage) = usage {
+                    child_view.apply_turn_usage_cost(&prompt_id, usage);
+                }
+                true
             } else {
                 false
             }

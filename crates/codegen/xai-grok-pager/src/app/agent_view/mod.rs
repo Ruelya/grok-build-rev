@@ -1462,6 +1462,12 @@ pub struct AgentView {
     pub billing_surface_visible: bool,
     /// Whether `/usage` is offered. Mirrors `!AppView::has_external_auth_provider`.
     pub usage_command_visible: bool,
+    /// Accumulated session cost in USD (from turn usage ticks / estimates).
+    pub session_cost_usd: f64,
+    /// Preformatted live cost label for the prompt info line (e.g. `$0.12`).
+    pub session_cost_label: String,
+    /// Prompt ids already folded into `session_cost_usd` (dedupe replay + live).
+    pub(crate) session_cost_prompt_ids: HashSet<String>,
     /// Input flight recorder — rolling buffer of recent key events.
     /// Dumped to file via Esc→d combo for debugging.
     pub(crate) input_log: crate::input_log::InputRingBuffer,

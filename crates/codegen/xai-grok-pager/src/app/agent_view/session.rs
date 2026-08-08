@@ -317,6 +317,9 @@ impl AgentView {
             scheduler_background_loops: None,
             billing_surface_visible: false,
             usage_command_visible: true,
+            session_cost_usd: 0.0,
+            session_cost_label: String::new(),
+            session_cost_prompt_ids: HashSet::new(),
             input_log: crate::input_log::InputRingBuffer::new(),
             esc_pressed_at: None,
             rewind_suppress_deadline: None,
@@ -371,6 +374,40 @@ impl AgentView {
         child_view.mark_as_subagent_view();
         self.subagent_views.insert(child_sid, child_view);
     }
+    /// Fold one turn's usage into the live session cost cache (deduped by
+    /// `prompt_id`). Safe during replay and live; no-op when mode is Off or
+    /// the turn contributes zero cost.
+    pub fn apply_turn_usage_cost(
+        &mut self,
+        prompt_id: &str,
+        usage: &xai_grok_shell::extensions::notification::PromptUsage,
+    ) {
+        if prompt_id.is_empty() || !self.session_cost_prompt_ids.insert(prompt_id.to_string()) {
+            return;
+        }
+        let mode = crate::usage_activity::pricing_mode();
+        let add = crate::usage_activity::cost_from_prompt_usage(usage, mode);
+        if add > 0.0 && add.is_finite() {
+            self.session_cost_usd += add;
+        }
+        self.refresh_session_cost_label();
+    }
+
+    /// Rebuild `session_cost_label` from `session_cost_usd` and pricing config.
+    pub fn refresh_session_cost_label(&mut self) {
+        let cfg = crate::usage_activity::load_pricing_config();
+        if !cfg.live_display || matches!(cfg.mode, crate::usage_activity::CostMode::Off) {
+            self.session_cost_label.clear();
+            return;
+        }
+        if self.session_cost_usd <= 0.0 || !self.session_cost_usd.is_finite() {
+            self.session_cost_label.clear();
+            return;
+        }
+        self.session_cost_label =
+            crate::usage_activity::format_live_cost(self.session_cost_usd);
+    }
+
     /// Clear the turn-timing fields and stamp `last_active_at` to "now".
     ///
     /// Call this from every site that ends a turn (success, failure,
@@ -1928,5 +1965,103 @@ mod reconnect_workflow_maps_tests {
                 .map(|r| r.status.as_str()),
             Some("complete")
         );
+    }
+}
+
+#[cfg(test)]
+mod live_session_cost_tests {
+    use super::super::test_agent_view;
+    use xai_grok_shell::extensions::notification::{PromptUsage, PromptUsageModel};
+
+    fn usage_one_usd() -> PromptUsage {
+        let mut usage = PromptUsage {
+            totals: PromptUsageModel {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd_ticks: Some(10_000_000_000), // $1.00
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Named grok model so OfficialOnly still attributes cost.
+        usage.model_usage.insert(
+            "grok-4.5".into(),
+            PromptUsageModel {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd_ticks: Some(10_000_000_000),
+                ..Default::default()
+            },
+        );
+        usage
+    }
+
+    #[test]
+    fn apply_turn_usage_cost_accumulates_and_dedupes() {
+        // Ensure cost mode is not Off so ticks are attributed.
+        let mode_before = crate::usage_activity::pricing_mode();
+        if matches!(mode_before, crate::usage_activity::CostMode::Off) {
+            let _ = crate::usage_activity::cycle_cost_mode(true);
+        }
+        let mut agent = test_agent_view(Some("child-sess"), std::path::PathBuf::from("/tmp"));
+        agent.mark_as_subagent_view();
+        agent.apply_turn_usage_cost("turn-1", &usage_one_usd());
+        assert!(
+            (agent.session_cost_usd - 1.0).abs() < 1e-9,
+            "first turn must add $1 from ticks, got {}",
+            agent.session_cost_usd
+        );
+        agent.apply_turn_usage_cost("turn-1", &usage_one_usd());
+        assert!(
+            (agent.session_cost_usd - 1.0).abs() < 1e-9,
+            "same prompt_id must not double-count"
+        );
+        agent.apply_turn_usage_cost("turn-2", &usage_one_usd());
+        assert!(
+            (agent.session_cost_usd - 2.0).abs() < 1e-9,
+            "second prompt must add another $1, got {}",
+            agent.session_cost_usd
+        );
+        // Restore Off if we changed it.
+        if matches!(mode_before, crate::usage_activity::CostMode::Off) {
+            while !matches!(
+                crate::usage_activity::pricing_mode(),
+                crate::usage_activity::CostMode::Off
+            ) {
+                let _ = crate::usage_activity::cycle_cost_mode(true);
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_session_cost_label_respects_live_display() {
+        let mut agent = test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
+        agent.session_cost_usd = 1.25;
+        // Ensure live_display is on so the label path runs.
+        let before = crate::usage_activity::PricingConfig::load().live_display;
+        if !before {
+            let _ = crate::usage_activity::toggle_live_display();
+        }
+        // Cost mode must not be Off for a non-empty label.
+        if matches!(
+            crate::usage_activity::pricing_mode(),
+            crate::usage_activity::CostMode::Off
+        ) {
+            let _ = crate::usage_activity::cycle_cost_mode(true);
+        }
+        agent.refresh_session_cost_label();
+        assert!(
+            !agent.session_cost_label.is_empty(),
+            "live_display ON must format a cost label for positive usd"
+        );
+        assert!(
+            agent.session_cost_label.contains('1') || agent.session_cost_label.contains('$'),
+            "label should look like a dollar amount: {}",
+            agent.session_cost_label
+        );
+        // Restore host live_display.
+        if !before {
+            let _ = crate::usage_activity::toggle_live_display();
+        }
     }
 }

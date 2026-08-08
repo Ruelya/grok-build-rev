@@ -399,6 +399,31 @@ impl AgentView {
             }
         }
 
+        // UsageActivity: interactive calendar + models + WebDAV.
+        if let ActiveModal::UsageActivity { state } = modal {
+            let chrome_cfg = mw::ModalWindowConfig {
+                title: "Usage activity",
+                tabs: None,
+                shortcuts: &[],
+                sizing: mw::ModalSizing::default(),
+                fold_info: None,
+            };
+            let outcome = mw::handle_modal_key(&mut state.window, key, &chrome_cfg);
+            match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                ModalWindowOutcome::ShortcutActivated(id) => {
+                    return crate::views::usage_activity_modal::handle_usage_shortcut(state, id);
+                }
+                ModalWindowOutcome::Unhandled => {
+                    return crate::views::usage_activity_modal::handle_usage_key(state, key);
+                }
+                _ => return InputOutcome::Changed,
+            }
+        }
+
         // Settings: route through ModalWindow chrome, then delegate.
         if let ActiveModal::Settings { state } = modal {
             // Sub-mode short-circuit: FilterFocused, PickingEnum, PickingGroup,
@@ -455,6 +480,7 @@ impl AgentView {
                             self.copy_usage_modal_session_id();
                             InputOutcome::Changed
                         }
+                        UsageModalOutcome::Action(a) => InputOutcome::Action(a),
                         UsageModalOutcome::Changed => InputOutcome::Changed,
                         UsageModalOutcome::Unchanged => InputOutcome::Unchanged,
                     };
@@ -512,6 +538,7 @@ impl AgentView {
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
+            | ActiveModal::UsageActivity { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::UsageInfo { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
@@ -1573,6 +1600,30 @@ impl AgentView {
             }
         }
 
+        if let Some(ActiveModal::UsageActivity { state }) = &mut self.active_modal {
+            let outcome =
+                mw::handle_modal_mouse(&mut state.window, mouse.kind, mouse.column, mouse.row);
+            match outcome {
+                ModalWindowOutcome::CloseRequested => {
+                    self.active_modal = None;
+                    return InputOutcome::Changed;
+                }
+                ModalWindowOutcome::Handled => return InputOutcome::Changed,
+                ModalWindowOutcome::ShortcutActivated(id) => {
+                    return crate::views::usage_activity_modal::handle_usage_shortcut(state, id);
+                }
+                ModalWindowOutcome::Unhandled => {
+                    return crate::views::usage_activity_modal::handle_usage_mouse(
+                        state,
+                        mouse.kind,
+                        mouse.column,
+                        mouse.row,
+                    );
+                }
+                _ => return InputOutcome::Changed,
+            }
+        }
+
         // Settings: route through ModalWindow chrome, then delegate.
         if let Some(ActiveModal::Settings { state }) = &mut self.active_modal {
             let outcome =
@@ -1633,6 +1684,7 @@ impl AgentView {
                             self.copy_usage_modal_session_id();
                             InputOutcome::Changed
                         }
+                        UsageModalOutcome::Action(a) => InputOutcome::Action(a),
                         UsageModalOutcome::Changed => InputOutcome::Changed,
                         UsageModalOutcome::Unchanged => InputOutcome::Unchanged,
                     };
@@ -2420,6 +2472,10 @@ impl AgentView {
                 );
             } else if let modal::ActiveModal::MemoryBrowser { state: mem_state } = active_modal {
                 crate::views::memory_modal::render_memory_modal(buf, area, mem_state, compact);
+            } else if let modal::ActiveModal::UsageActivity { state: usage_state } = active_modal {
+                crate::views::usage_activity_modal::render_usage_activity(
+                    usage_state, area, buf, &theme,
+                );
             } else if let modal::ActiveModal::Settings {
                 state: settings_state,
             } = active_modal

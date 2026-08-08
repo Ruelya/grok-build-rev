@@ -1079,7 +1079,7 @@ fn show_usage_on_welcome_screen_is_noop() {
 }
 
 #[test]
-fn show_usage_with_redirect_url_fetches_session_only() {
+fn show_usage_with_redirect_url_starts_activity_refresh() {
     // Redirect link is deferred until SessionUsageComplete (see billing tests).
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
@@ -1089,7 +1089,7 @@ fn show_usage_with_redirect_url_fetches_session_only() {
     assert!(
         matches!(
             effects.as_slice(),
-            [Effect::FetchSessionUsage { agent_id, .. }] if *agent_id == AgentId(0)
+            [Effect::RefreshUsageActivity { agent_id, .. }] if *agent_id == AgentId(0)
         ),
         "got: {effects:?}"
     );
@@ -1160,9 +1160,14 @@ fn show_usage_opens_modal_on_usage_limit_tab_with_fetches() {
                 Effect::ShowSessionInfo { .. },
                 Effect::FetchSessionUsage { .. },
                 Effect::FetchBilling { silent: true, .. },
+                Effect::RefreshUsageActivity { .. },
             ]
         ),
         "got: {effects:?}"
+    );
+    assert!(
+        usage_modal_state(&app).activity.is_some(),
+        "Activity tab state must be seeded on open"
     );
 }
 

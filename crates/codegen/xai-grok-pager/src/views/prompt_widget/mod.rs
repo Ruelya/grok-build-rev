@@ -308,6 +308,62 @@ pub struct PromptFlag<'a> {
     pub bold: bool,
 }
 
+/// Semantic badge colors for session / permission modes (Shift+Tab cycle).
+///
+/// | Mode | Color role |
+/// |------|------------|
+/// | plan | [`Theme::accent_plan`] (gold) |
+/// | always-approve | [`Theme::warning`] (amber — caution) |
+/// | auto | [`Theme::accent_system`] (blue) |
+/// | normal / default | [`Theme::gray_bright`] (neutral) |
+/// | ask | [`Theme::accent_user`] |
+pub fn session_mode_badge_color(
+    theme: &Theme,
+    mode: &str,
+) -> Option<ratatui::style::Color> {
+    let m = mode.trim();
+    // Accept banner labels ("Always-Approve"), flag text ("always-approve"),
+    // and a few wire/display aliases.
+    let key = m.to_ascii_lowercase().replace('_', "-");
+    let key = key.as_str();
+    if key == "plan"
+        || key == "planmode"
+        || key == "plan-mode"
+        || key == "plan approval"
+        || key.starts_with("commenting")
+    {
+        return Some(theme.accent_plan);
+    }
+    if key == "always-approve"
+        || key == "alwaysapprove"
+        || key == "yolo"
+        || key == "auto-approve"
+    {
+        return Some(theme.warning);
+    }
+    if key == "auto" {
+        return Some(theme.accent_system);
+    }
+    if key == "ask" {
+        return Some(theme.accent_user);
+    }
+    if key == "normal" || key == "default" {
+        return Some(theme.gray_bright);
+    }
+    None
+}
+
+/// Build a colored mode flag for the prompt info line.
+pub fn session_mode_flag<'a>(theme: &Theme, text: &'a str) -> PromptFlag<'a> {
+    let color = session_mode_badge_color(theme, text);
+    // Always-approve is high-impact — keep it bold so it doesn't blend into gray.
+    let bold = matches!(
+        text.to_ascii_lowercase().replace('_', "-").as_str(),
+        "always-approve" | "alwaysapprove" | "yolo" | "auto-approve"
+    );
+    PromptFlag { text, color, bold }
+}
+
 /// Optional info line rendered below the prompt text.
 ///
 /// The default is blank: a caller that wants the bottom border without any info text passes it, and [`Self::is_blank`] then skips the text pass.
@@ -315,6 +371,9 @@ pub struct PromptFlag<'a> {
 pub struct PromptInfo<'a> {
     /// Primary label to display on the info line (left side).
     pub model_name: &'a str,
+    /// Live session cost label (e.g. `$0.12`), shown after the model name and
+    /// before mode flags when present.
+    pub live_cost: Option<&'a str>,
     /// Flags to display on the left side, joined by " · " (e.g., "plan", "always-approve").
     pub flags: &'a [PromptFlag<'a>],
     /// Whether multiline mode is active (shown right-aligned).
@@ -329,6 +388,7 @@ pub struct PromptInfo<'a> {
 impl PromptInfo<'_> {
     pub fn is_blank(&self) -> bool {
         self.model_name.is_empty()
+            && self.live_cost.is_none()
             && self.flags.is_empty()
             && !self.multiline
             && self.usage_warning.is_none()
@@ -3425,6 +3485,18 @@ impl PromptWidget {
             left_spans.push(Span::styled(" · ", sep_style));
         }
         left_spans.push(Span::styled(info.model_name, model_style));
+        // Live cost sits between model name and mode flags.
+        if let Some(cost) = info.live_cost {
+            left_spans.push(Span::styled(" · ", sep_style));
+            let cost_fg = if focused {
+                theme.accent_success
+            } else {
+                crate::render::color::blend_color(bg, theme.accent_success, flag_opacity)
+                    .unwrap_or(theme.text_secondary)
+            };
+            let cost_style = Style::default().fg(cost_fg).bg(bg);
+            left_spans.push(Span::styled(cost.to_owned(), cost_style));
+        }
         for flag in info.flags {
             left_spans.push(Span::styled(" · ", sep_style));
             let mut style = if let Some(color) = flag.color {

@@ -53,6 +53,7 @@ pub(super) fn open_usage_info_modal(
     let usage_visible = app.usage_visible;
     let redirect_url = app.usage_billing_redirect_url.clone();
     let tier = app.subscription_tier.clone();
+    let billing = app.credit_balance.clone();
     let show_resolved_model = app.show_resolved_model;
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
@@ -73,13 +74,15 @@ pub(super) fn open_usage_info_modal(
             usage_visible,
             chat_kind: agent.chat_kind,
             billing_redirect_url: redirect_url,
-            subscription_tier: tier,
+            subscription_tier: tier.clone(),
         },
     );
     state.fetch_nonce = nonce;
+    // Seed Activity tab (heatmap / WebDAV / pricing) so the 4th tab is ready.
+    state.ensure_activity(billing, tier);
 
     let mut effects = Vec::new();
-    if let Some(session_id) = session_id {
+    if let Some(session_id) = session_id.clone() {
         effects.push(Effect::ShowContextInfo {
             agent_id: id,
             session_id: session_id.clone(),
@@ -106,6 +109,12 @@ pub(super) fn open_usage_info_modal(
             nonce,
         });
     }
+    // Always refresh local activity (scan + optional WebDAV) for the Activity tab.
+    effects.push(Effect::RefreshUsageActivity {
+        agent_id: id,
+        session_id,
+        force_webdav: false,
+    });
     agent.active_modal = Some(ActiveModal::UsageInfo {
         state: Box::new(state),
     });
@@ -286,12 +295,45 @@ pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
     }]
 }
 
-/// `/usage` — open the usage modal on its "Usage limit" tab. Minimal mode
-/// keeps the scrollback flow: session token/cost, then consumer credits.
+/// `/usage` — open the official tabbed usage modal (Activity is the 4th tab).
+/// Minimal mode keeps the standalone activity shell (no tab chrome).
 pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
     if !app.screen_mode.is_minimal() {
+        // Default tab: Usage limit; Activity is available via Tab / key `4`.
         return open_usage_info_modal(app, crate::views::usage_modal::UsageInfoTab::UsageLimit);
     }
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    // Clone billing before mutably borrowing the agent (borrowck).
+    let billing = app.credit_balance.clone();
+    let tier = app.subscription_tier.clone();
+    let (merged, sync_status) = crate::usage_activity::local_preview_merged();
+    let session_id = {
+        let Some(agent) = app.agents.get_mut(&id) else {
+            return vec![];
+        };
+        // Instant shell so the user is not staring at a frozen TUI.
+        let preview = crate::views::usage_activity_modal::UsageActivityModalState::loading_preview(
+            merged,
+            sync_status,
+            billing,
+            tier,
+        );
+        agent.active_modal = Some(crate::views::modal::ActiveModal::UsageActivity {
+            state: Box::new(preview),
+        });
+        agent.session.session_id.clone()
+    };
+    vec![Effect::RefreshUsageActivity {
+        agent_id: id,
+        session_id,
+        force_webdav: false,
+    }]
+}
+
+/// Immediate sync from the Usage modal (`s` / click Sync).
+pub(super) fn dispatch_force_usage_sync(app: &mut AppView) -> Vec<Effect> {
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -299,24 +341,127 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
         let Some(agent) = app.agents.get_mut(&id) else {
             return vec![];
         };
+        if let Some(crate::views::modal::ActiveModal::UsageActivity { state }) =
+            &mut agent.active_modal
+        {
+            state.phase = crate::views::usage_activity_modal::UsagePhase::Loading;
+            state.sync_note = Some("Syncing WebDAV…".into());
+        }
         agent.session.session_id.clone()
     };
-    match session_id {
-        Some(session_id) => vec![Effect::FetchSessionUsage {
-            agent_id: id,
-            session_id,
-            nonce: 0,
-        }],
-        None => {
-            if let Some(agent) = app.agents.get_mut(&id) {
-                push_and_page_flip(
-                    &mut agent.scrollback,
-                    RenderBlock::system(
-                        "Session usage is unavailable until the session starts.".to_string(),
-                    ),
-                );
+    vec![Effect::RefreshUsageActivity {
+        agent_id: id,
+        session_id,
+        force_webdav: true,
+    }]
+}
+
+/// Re-scan local usage after cost-mode change (`p`). WebDAV only if auto_sync.
+pub(super) fn dispatch_rescan_usage_local(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let session_id = {
+        let Some(agent) = app.agents.get_mut(&id) else {
+            return vec![];
+        };
+        if let Some(crate::views::modal::ActiveModal::UsageActivity { state }) =
+            &mut agent.active_modal
+        {
+            state.phase = crate::views::usage_activity_modal::UsagePhase::Loading;
+            if state.sync_note.is_none() {
+                state.sync_note = Some("Rescanning local usage…".into());
             }
-            append_consumer_billing_surface(app, id)
+        }
+        agent.session.session_id.clone()
+    };
+    vec![Effect::RefreshUsageActivity {
+        agent_id: id,
+        session_id,
+        force_webdav: false,
+    }]
+}
+
+/// After activity refresh: update embedded Activity tab or standalone modal.
+pub(super) fn handle_usage_activity_complete(
+    app: &mut AppView,
+    agent_id: AgentId,
+    session_id: Option<acp::SessionId>,
+    mut modal: Box<crate::views::usage_activity_modal::UsageActivityModalState>,
+) -> Vec<Effect> {
+    // Attach latest billing cache for reverse-estimate panel inside the modal.
+    modal.billing = app.credit_balance.clone();
+    modal.tier = app.subscription_tier.clone();
+    modal.phase = crate::views::usage_activity_modal::UsagePhase::Ready;
+    // Always re-read pricing prefs (mode via `p`, live $ via `d`).
+    let pricing = crate::usage_activity::PricingConfig::load();
+    modal.cost_mode = pricing.mode;
+    modal.live_display = pricing.live_display;
+
+    // Preserve focus / selection when re-syncing over an open modal.
+    let preserve_from = |prev: &crate::views::usage_activity_modal::UsageActivityModalState,
+                         modal: &mut crate::views::usage_activity_modal::UsageActivityModalState| {
+        modal.focus = prev.focus;
+        modal.granularity = prev.granularity;
+        if modal.selected_day >= modal.day_keys.len() {
+            modal.selected_day = modal.day_keys.len().saturating_sub(1);
+        } else {
+            modal.selected_day = prev.selected_day.min(modal.day_keys.len().saturating_sub(1));
+        }
+        modal.selected_model = prev.selected_model.min(modal.model_rows.len().saturating_sub(1));
+        if let Some(fi) = prev.filter_model {
+            if let Some((name, _)) = prev.model_rows.get(fi) {
+                modal.filter_model = modal.model_rows.iter().position(|(n, _)| n == name);
+            }
+        }
+    };
+
+    if let Some(agent) = app.agents.get(&agent_id) {
+        match &agent.active_modal {
+            Some(crate::views::modal::ActiveModal::UsageActivity { state: prev }) => {
+                preserve_from(prev, &mut modal);
+            }
+            Some(crate::views::modal::ActiveModal::UsageInfo { state: parent }) => {
+                if let Some(prev) = parent.activity.as_ref() {
+                    preserve_from(prev, &mut modal);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+
+    // Prefer embedding into the official tabbed usage modal when it is open.
+    if let Some(crate::views::modal::ActiveModal::UsageInfo { state: parent }) =
+        agent.active_modal.as_mut()
+    {
+        parent.activity = Some(modal);
+        return vec![];
+    }
+
+    // Minimal / standalone activity shell.
+    agent.active_modal = Some(crate::views::modal::ActiveModal::UsageActivity { state: modal });
+
+    match session_id {
+        Some(session_id) => {
+            if agent.session.session_id.as_ref() != Some(&session_id) {
+                return append_consumer_billing_surface(app, agent_id);
+            }
+            // Still fetch session ledger + billing into scrollback behind the modal.
+            vec![Effect::FetchSessionUsage {
+                agent_id,
+                session_id,
+                nonce: 0,
+            }]
+        }
+        None => {
+            agent.scrollback.push_block(RenderBlock::system(
+                "Session usage is unavailable until the session starts.".to_string(),
+            ));
+            append_consumer_billing_surface(app, agent_id)
         }
     }
 }

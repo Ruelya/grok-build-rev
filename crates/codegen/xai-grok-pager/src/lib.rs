@@ -61,6 +61,7 @@ pub(crate) mod wrap_filter;
 pub(crate) mod wrap_restore;
 
 pub mod tool_usage;
+pub mod usage_activity;
 
 // Presentation-primitives layer extracted into the sibling crate
 // `xai-grok-pager-render`. Re-exported at the crate root so existing

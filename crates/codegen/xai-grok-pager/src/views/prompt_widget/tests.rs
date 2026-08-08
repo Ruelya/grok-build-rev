@@ -4623,3 +4623,39 @@
             "without the remap the chip keeps its own background"
         );
     }
+
+    #[test]
+    fn session_mode_badge_colors_are_distinct() {
+        let theme = crate::theme::Theme::groknight();
+        let plan = session_mode_badge_color(&theme, "Plan").expect("plan");
+        let yolo = session_mode_badge_color(&theme, "Always-Approve").expect("yolo");
+        let auto = session_mode_badge_color(&theme, "Auto").expect("auto");
+        let normal = session_mode_badge_color(&theme, "Normal").expect("normal");
+        assert_eq!(plan, theme.accent_plan);
+        assert_eq!(yolo, theme.warning);
+        assert_eq!(auto, theme.accent_system);
+        assert_eq!(normal, theme.gray_bright);
+        assert_ne!(plan, yolo);
+        assert_ne!(yolo, auto);
+        assert_ne!(plan, auto);
+        let flag = session_mode_flag(&theme, "always-approve");
+        assert!(flag.bold);
+        assert_eq!(flag.color, Some(theme.warning));
+        assert!(session_mode_badge_color(&theme, "commenting L3").is_some());
+    }
+
+    #[test]
+    fn prompt_info_live_cost_is_not_blank() {
+        let info = PromptInfo {
+            model_name: "",
+            live_cost: Some("$0.12"),
+            flags: &[],
+            multiline: false,
+            usage_warning: None,
+            usage_warning_critical: false,
+        };
+        assert!(!info.is_blank(), "live_cost alone must keep the info line");
+        let blank = PromptInfo::default();
+        assert!(blank.is_blank());
+        assert!(blank.live_cost.is_none());
+    }

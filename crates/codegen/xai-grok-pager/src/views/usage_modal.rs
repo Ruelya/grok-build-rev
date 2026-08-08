@@ -22,19 +22,22 @@ use crate::views::modal_window::{
 /// Footer shortcut ID for "copy session ID".
 pub const COPY_SESSION_ID_SHORTCUT: usize = 1;
 
-/// The three tabs, in display order.
+/// Tabs in display order (Activity is the fork history/pricing tab).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageInfoTab {
     ContextUsage,
     UsageLimit,
     SessionInfo,
+    /// Local history heatmap, WebDAV sync, cost mode, live $ toggle.
+    Activity,
 }
 
 impl UsageInfoTab {
-    pub const ALL: [UsageInfoTab; 3] = [
+    pub const ALL: [UsageInfoTab; 4] = [
         UsageInfoTab::ContextUsage,
         UsageInfoTab::UsageLimit,
         UsageInfoTab::SessionInfo,
+        UsageInfoTab::Activity,
     ];
 
     pub fn label(self) -> &'static str {
@@ -42,6 +45,7 @@ impl UsageInfoTab {
             UsageInfoTab::ContextUsage => "Context usage",
             UsageInfoTab::UsageLimit => "Usage limit",
             UsageInfoTab::SessionInfo => "Session info",
+            UsageInfoTab::Activity => "Activity",
         }
     }
 
@@ -91,6 +95,9 @@ pub struct UsageInfoModalState {
     /// Hit rect of the visible "Session ID" row (click-to-copy), refreshed
     /// every render.
     pub session_id_rect: Option<Rect>,
+    /// Fork activity dashboard (heatmap / WebDAV / cost / live $). Populated
+    /// when the modal opens and refreshed by `RefreshUsageActivity`.
+    pub activity: Option<Box<crate::views::usage_activity_modal::UsageActivityModalState>>,
 }
 
 impl UsageInfoModalState {
@@ -109,7 +116,28 @@ impl UsageInfoModalState {
             billing_error: None,
             fetch_nonce: 0,
             session_id_rect: None,
+            activity: None,
         }
+    }
+
+    /// Ensure an activity state exists (loading shell until refresh lands).
+    pub fn ensure_activity(
+        &mut self,
+        billing: Option<crate::views::credit_bar::CreditBalance>,
+        tier: Option<String>,
+    ) {
+        if self.activity.is_some() {
+            return;
+        }
+        let (merged, sync_status) = crate::usage_activity::local_preview_merged();
+        self.activity = Some(Box::new(
+            crate::views::usage_activity_modal::UsageActivityModalState::loading_preview(
+                merged,
+                sync_status,
+                billing,
+                tier,
+            ),
+        ));
     }
 
     pub fn set_tab(&mut self, tab: UsageInfoTab) {
@@ -133,13 +161,29 @@ impl UsageInfoModalState {
 
 /// Outcome of a content key/mouse event. Chrome events (Esc, `[✗]`, tab
 /// clicks, footer clicks) are handled by the caller via `modal_window`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum UsageModalOutcome {
     /// Copy the session ID to the clipboard (caller owns clipboard + toast).
     CopySessionId,
+    /// Activity tab produced a dispatch action (sync / rescan / open config).
+    Action(crate::app::actions::Action),
     Changed,
     Unchanged,
 }
+
+impl PartialEq for UsageModalOutcome {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::CopySessionId, Self::CopySessionId)
+            | (Self::Changed, Self::Changed)
+            | (Self::Unchanged, Self::Unchanged) => true,
+            // Actions are not compared by payload (Action is not Eq).
+            (Self::Action(_), Self::Action(_)) => true,
+            _ => false,
+        }
+    }
+}
+impl Eq for UsageModalOutcome {}
 
 pub fn handle_usage_modal_key(
     state: &mut UsageInfoModalState,
@@ -153,17 +197,44 @@ pub fn handle_usage_modal_key(
     {
         return UsageModalOutcome::Unchanged;
     }
+
+    // Top-level tab switch always available (Tab / BackTab / 1-4).
     match key.code {
-        KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+        KeyCode::Tab => {
+            state.step_tab(true);
+            return UsageModalOutcome::Changed;
+        }
+        KeyCode::BackTab => {
+            state.step_tab(false);
+            return UsageModalOutcome::Changed;
+        }
+        KeyCode::Char(c @ '1'..='4') => {
+            state.set_tab(UsageInfoTab::from_index(c as usize - '1' as usize));
+            return UsageModalOutcome::Changed;
+        }
+        _ => {}
+    }
+
+    // Activity tab owns its own navigation (h/l days, j/k models, p/d, …).
+    if state.active_tab == UsageInfoTab::Activity {
+        if let Some(activity) = state.activity.as_mut() {
+            use crate::app::app_view::InputOutcome;
+            return match crate::views::usage_activity_modal::handle_usage_key(activity, key) {
+                InputOutcome::Action(a) => UsageModalOutcome::Action(a),
+                InputOutcome::Changed => UsageModalOutcome::Changed,
+                _ => UsageModalOutcome::Unchanged,
+            };
+        }
+        return UsageModalOutcome::Unchanged;
+    }
+
+    match key.code {
+        KeyCode::Right | KeyCode::Char('l') => {
             state.step_tab(true);
             UsageModalOutcome::Changed
         }
-        KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+        KeyCode::Left | KeyCode::Char('h') => {
             state.step_tab(false);
-            UsageModalOutcome::Changed
-        }
-        KeyCode::Char(c @ '1'..='3') => {
-            state.set_tab(UsageInfoTab::from_index(c as usize - '1' as usize));
             UsageModalOutcome::Changed
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -202,6 +273,19 @@ pub fn handle_usage_modal_mouse(
     column: u16,
     row: u16,
 ) -> UsageModalOutcome {
+    if state.active_tab == UsageInfoTab::Activity {
+        if let Some(activity) = state.activity.as_mut() {
+            use crate::app::app_view::InputOutcome;
+            return match crate::views::usage_activity_modal::handle_usage_mouse(
+                activity, kind, column, row,
+            ) {
+                InputOutcome::Action(a) => UsageModalOutcome::Action(a),
+                InputOutcome::Changed => UsageModalOutcome::Changed,
+                _ => UsageModalOutcome::Unchanged,
+            };
+        }
+        return UsageModalOutcome::Unchanged;
+    }
     match kind {
         MouseEventKind::ScrollUp => {
             state.scroll = state.scroll.saturating_sub(3);
@@ -232,6 +316,7 @@ pub fn render_usage_modal(
 ) {
     let labels: Vec<&str> = UsageInfoTab::ALL.iter().map(|t| t.label()).collect();
     state.window.active_tab = state.active_tab.index();
+    let on_activity = state.active_tab == UsageInfoTab::Activity;
 
     let mut shortcuts: Vec<Shortcut> = vec![
         Shortcut {
@@ -239,18 +324,41 @@ pub fn render_usage_modal(
             clickable: false,
             id: 0,
         },
-        Shortcut {
+    ];
+    if on_activity {
+        shortcuts.push(Shortcut {
+            label: "w week",
+            clickable: false,
+            id: 0,
+        });
+        shortcuts.push(Shortcut {
+            label: "s sync",
+            clickable: false,
+            id: 0,
+        });
+        shortcuts.push(Shortcut {
+            label: "p cost",
+            clickable: false,
+            id: 0,
+        });
+        shortcuts.push(Shortcut {
+            label: "d live$",
+            clickable: false,
+            id: 0,
+        });
+    } else {
+        shortcuts.push(Shortcut {
             label: "\u{2191}/\u{2193} scroll",
             clickable: false,
             id: 0,
-        },
-    ];
-    if state.ctx.session_id.is_some() {
-        shortcuts.push(Shortcut {
-            label: "c copy session ID",
-            clickable: true,
-            id: COPY_SESSION_ID_SHORTCUT,
         });
+        if state.ctx.session_id.is_some() {
+            shortcuts.push(Shortcut {
+                label: "c copy session ID",
+                clickable: true,
+                id: COPY_SESSION_ID_SHORTCUT,
+            });
+        }
     }
     shortcuts.push(Shortcut {
         label: "Esc close",
@@ -258,16 +366,27 @@ pub fn render_usage_modal(
         id: 0,
     });
 
-    // v_pad / footer_lines pad the body top and bottom (shortcuts render
-    // bottom-aligned, so the spare footer row reads as bottom padding).
-    let sizing = ModalSizing {
-        width_pct: 0.65,
-        max_width: 100,
-        min_width: 44,
-        v_margin: 2,
-        h_pad: 2,
-        v_pad: 2,
-        footer_lines: 3,
+    // Activity needs a wider, taller body for heatmap + model table.
+    let sizing = if on_activity {
+        ModalSizing {
+            width_pct: 0.86,
+            max_width: 120,
+            min_width: 64,
+            v_margin: 1,
+            h_pad: 2,
+            v_pad: 1,
+            footer_lines: 3,
+        }
+    } else {
+        ModalSizing {
+            width_pct: 0.65,
+            max_width: 100,
+            min_width: 44,
+            v_margin: 2,
+            h_pad: 2,
+            v_pad: 2,
+            footer_lines: 3,
+        }
     }
     .with_compact(compact);
     // No border title — the tab bar is the header, as in the extensions modal.
@@ -279,11 +398,9 @@ pub fn render_usage_modal(
         fold_info: None,
     };
 
-    // The chrome always fills `area` minus `v_margin`, so cap the height
-    // ourselves: tall terminals would otherwise get a mostly-empty box.
-    // 30 rows ≈ the widest tab's content (context grid + legend) + chrome.
-    const MAX_MODAL_HEIGHT: u16 = 30;
-    let outer = MAX_MODAL_HEIGHT + sizing.v_margin * 2;
+    // Cap height: activity uses more rows; other tabs stay compact.
+    let max_modal_height: u16 = if on_activity { 36 } else { 30 };
+    let outer = max_modal_height + sizing.v_margin * 2;
     let area = if area.height > outer {
         Rect {
             x: area.x,
@@ -300,6 +417,20 @@ pub fn render_usage_modal(
         return;
     };
     let content = mca.content;
+
+    if on_activity {
+        state.session_id_rect = None;
+        if let Some(activity) = state.activity.as_mut() {
+            let dark_ui = theme.is_dark();
+            crate::views::usage_activity_modal::render_activity_content(
+                activity, content, buf, theme, dark_ui,
+            );
+        } else {
+            Paragraph::new(vec![muted_line(theme, "Loading activity...")]).render(content, buf);
+        }
+        return;
+    }
+
     let tab = tab_lines(state, balance, theme, content.width);
     // No wrapping: one row per logical line keeps the scroll clamp exact.
     let max_scroll = tab.lines.len().saturating_sub(content.height as usize);
@@ -352,6 +483,8 @@ fn tab_lines(
             TabContent::from_lines(usage_limit_lines(state, balance, theme))
         }
         UsageInfoTab::SessionInfo => session_info_content(state, theme),
+        // Activity is drawn directly into the content rect (not line-based).
+        UsageInfoTab::Activity => TabContent::from_lines(vec![]),
     }
 }
 
@@ -604,9 +737,11 @@ mod tests {
         assert_eq!(state.active_tab, UsageInfoTab::SessionInfo);
         assert_eq!(state.scroll, 0, "tab switch resets scroll");
         handle_usage_modal_key(&mut state, &key(KeyCode::Tab));
+        assert_eq!(state.active_tab, UsageInfoTab::Activity);
+        handle_usage_modal_key(&mut state, &key(KeyCode::Tab));
         assert_eq!(state.active_tab, UsageInfoTab::ContextUsage, "wraps");
         handle_usage_modal_key(&mut state, &key(KeyCode::BackTab));
-        assert_eq!(state.active_tab, UsageInfoTab::SessionInfo, "wraps back");
+        assert_eq!(state.active_tab, UsageInfoTab::Activity, "wraps back");
     }
 
     #[test]
@@ -696,12 +831,13 @@ mod tests {
             "Context usage",
             "Usage limit",
             "Session info",
+            "Activity",
             "copy session ID",
             "Session usage: no model calls yet.",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
         }
-        assert_eq!(state.window.tab_rects.len(), 3);
+        assert_eq!(state.window.tab_rects.len(), 4);
         assert!(state.window.close_button_rect.is_some());
     }
 

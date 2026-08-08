@@ -685,6 +685,10 @@ pub enum Action {
     ShowContextInfo,
     /// `/usage` — session token/cost, plus consumer credits when visible.
     ShowUsage,
+    /// Usage modal: immediate WebDAV sync (same as open `/usage` but force webdav).
+    ForceUsageSync,
+    /// Usage modal: re-scan local sessions (applies cost mode); WebDAV only if auto_sync.
+    RescanUsageLocal,
     /// `/usage manage` — open consumer billing (no-op if surface hidden).
     ManageBilling,
     /// Commit a read-only list of the queued prompts as a system block
@@ -2095,6 +2099,14 @@ pub enum Effect {
         /// Usage-modal fetch generation; echoed back on the task result.
         nonce: u64,
     },
+    /// `/usage` open: rescan local history, WebDAV pull/merge/upload, then
+    /// continue into session usage + billing. `session_id` when a session exists.
+    /// `force_webdav`: ignore `auto_sync=false` (Usage modal `s` = immediate sync).
+    RefreshUsageActivity {
+        agent_id: AgentId,
+        session_id: Option<acp::SessionId>,
+        force_webdav: bool,
+    },
     /// Re-fetch remote settings to check subscription gate.
     RefreshGate,
     /// Spawn a debounce sleep task for shell suggestions. `agent_id` rides
@@ -2647,6 +2659,12 @@ pub enum TaskResult {
         session_id: acp::SessionId,
         error: String,
         nonce: u64,
+    },
+    /// Local activity refresh finished; open interactive modal then session/billing.
+    UsageActivityComplete {
+        agent_id: AgentId,
+        session_id: Option<acp::SessionId>,
+        modal: Box<crate::views::usage_activity_modal::UsageActivityModalState>,
     },
     /// `/usage` session ledger fetched. Drop if `session_id` no longer matches.
     SessionUsageComplete {

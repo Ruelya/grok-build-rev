@@ -501,6 +501,13 @@ fn is_session_usage_fetch(effects: &[Effect]) -> bool {
     )
 }
 
+fn is_usage_activity_refresh(effects: &[Effect]) -> bool {
+    matches!(
+        effects,
+        [Effect::RefreshUsageActivity { agent_id, .. }] if *agent_id == AgentId(0)
+    )
+}
+
 fn is_nonsilent_billing(effects: &[Effect]) -> bool {
     matches!(
         effects,
@@ -537,17 +544,17 @@ fn fail_session_usage(app: &mut AppView, session_id: &str, error: &str) -> Vec<E
 }
 
 #[test]
-fn show_usage_schedules_session_fetch_only() {
+fn show_usage_schedules_activity_refresh_first() {
     let mut app = test_app_with_agent();
-    // Scrollback flow is minimal-only.
+    // Minimal mode: fork opens the activity modal + refresh worker.
     app.screen_mode = crate::app::ScreenMode::Minimal;
-    assert!(is_session_usage_fetch(&dispatch(
+    assert!(is_usage_activity_refresh(&dispatch(
         Action::ShowUsage,
         &mut app
     )));
 
     app.usage_visible = false;
-    assert!(is_session_usage_fetch(&dispatch(
+    assert!(is_usage_activity_refresh(&dispatch(
         Action::ShowUsage,
         &mut app
     )));
@@ -559,9 +566,35 @@ fn show_usage_without_session_still_surfaces_credits() {
     app.screen_mode = crate::app::ScreenMode::Minimal;
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
     let before = agent_scrollback_len(&app);
-    let effects = dispatch(Action::ShowUsage, &mut app);
+    // Open /usage → activity refresh effect only (async).
+    assert!(is_usage_activity_refresh(&dispatch(
+        Action::ShowUsage,
+        &mut app
+    )));
+    // Simulate activity complete with no session.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::UsageActivityComplete {
+            agent_id: AgentId(0),
+            session_id: None,
+            modal: Box::new(crate::views::usage_activity_modal::UsageActivityModalState::new(
+                crate::usage_activity::MergedActivity::default(),
+                None,
+                crate::usage_activity::SyncStatus::default(),
+                None,
+                None,
+            )),
+        }),
+        &mut app,
+    );
     assert!(last_system_text(&app, AgentId(0)).contains("unavailable"));
-    assert_eq!(agent_scrollback_len(&app), before + 1);
+    assert!(agent_scrollback_len(&app) >= before + 1);
+    assert!(
+        matches!(
+            app.agents.get(&AgentId(0)).and_then(|a| a.active_modal.as_ref()),
+            Some(crate::views::modal::ActiveModal::UsageActivity { .. })
+        ),
+        "expected UsageActivity modal"
+    );
     assert!(is_nonsilent_billing(&effects));
 }
 

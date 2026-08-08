@@ -1295,40 +1295,66 @@ fn auto_theme_setting_is_live(key: &str) -> bool {
 /// at `warn` (defensive — a malformed `rollback_value` is a softer
 /// failure mode than an unknown commit-time value) and no-op.
 pub(super) fn set_theme_inner(app: &mut AppView, value: &str) {
-    let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
-        tracing::warn!(
-            target: "settings",
-            key = "theme",
-            value = value,
-            "unknown theme name — set_theme_inner no-op",
-        );
+    if let Some(kind) = crate::theme::ThemeKind::from_name(value) {
+        let canonical = kind.display_name();
+        app.current_ui.theme = Some(canonical.to_string());
+        crate::theme::cache::set_auto_mode(kind.is_auto());
+        apply_theme_kind_for_display(kind);
         return;
-    };
-    let canonical = kind.display_name();
-    app.current_ui.theme = Some(canonical.to_string());
-    crate::theme::cache::set_auto_mode(kind.is_auto());
-    apply_theme_kind_for_display(kind);
+    }
+    // User-registered custom themes (from ~/.grok/themes or tests).
+    if crate::theme::Theme::apply_custom(value) {
+        let name = crate::theme::custom::intern_name(value);
+        app.current_ui.theme = Some(name.to_string());
+        crate::theme::cache::set_auto_mode(false);
+        return;
+    }
+    tracing::warn!(
+        target: "settings",
+        key = "theme",
+        value = value,
+        "unknown theme name — set_theme_inner no-op",
+    );
+}
+
+/// Resolve a theme name to a static string for settings persistence.
+fn resolve_theme_persist_name(value: &str) -> Option<&'static str> {
+    if let Some(c) = crate::theme::canonical_name(value) {
+        return Some(c);
+    }
+    if crate::theme::custom::is_registered(value) {
+        return Some(crate::theme::custom::intern_name(value));
+    }
+    None
+}
+
+/// Prior theme name for rollback (builtin canonical or custom interned).
+fn previous_theme_persist_name(app: &AppView) -> &'static str {
+    if let Some(name) = app.current_ui.theme.as_deref() {
+        if let Some(c) = crate::theme::canonical_name(name) {
+            return c;
+        }
+        if crate::theme::custom::is_registered(name) {
+            return crate::theme::custom::intern_name(name);
+        }
+    }
+    if let Some(custom) = crate::theme::custom::active_custom_name() {
+        return crate::theme::custom::intern_name(&custom);
+    }
+    crate::theme::cache::current_kind().display_name()
 }
 
 /// State + cache + persist for `theme` commits.
 pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec<Effect> {
-    let prev_canonical: &'static str = app
-        .current_ui
-        .theme
-        .as_deref()
-        .and_then(crate::theme::canonical_name)
-        .unwrap_or_else(|| crate::theme::cache::current_kind().display_name());
-    let new_canonical = match crate::theme::canonical_name(&new) {
-        Some(c) => c,
-        None => {
-            tracing::error!(
-                target: "settings",
-                key = "theme",
-                value = %new,
-                "Action::SetTheme dispatched with unknown name — no-op",
-            );
-            return vec![];
-        }
+    let prev_canonical = previous_theme_persist_name(app);
+    let Some(new_canonical) = resolve_theme_persist_name(&new) else {
+        tracing::error!(
+            target: "settings",
+            key = "theme",
+            value = %new,
+            "Action::SetTheme dispatched with unknown name — no-op",
+        );
+        return vec![];
     };
     set_theme_inner(app, &new);
     refresh_open_settings_modals(app);
@@ -1338,10 +1364,8 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
         value = %new_canonical,
         "setting changed",
     );
-    app.show_toast(&save_theme_toast(
-        "Theme",
-        crate::theme::display_name_for_canonical(new_canonical),
-    ));
+    let toast_label = crate::theme::display_name_for_canonical(new_canonical);
+    app.show_toast(&save_theme_toast("Theme", toast_label));
     vec![Effect::PersistSetting {
         key: "theme",
         value: crate::settings::SettingValue::Enum(new_canonical),
@@ -1356,6 +1380,9 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
 /// For `"auto"`, resolves and applies the theme but does NOT toggle
 /// `AUTO_MODE` (commit-only side effect).
 fn preview_theme_inner(value: &str) {
+    if crate::theme::Theme::apply_custom(value) {
+        return;
+    }
     let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
         tracing::warn!(
             target: "settings",

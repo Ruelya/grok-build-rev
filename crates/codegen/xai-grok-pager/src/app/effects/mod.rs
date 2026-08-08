@@ -3443,6 +3443,40 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::RefreshUsageActivity {
+            agent_id,
+            session_id,
+            force_webdav,
+        } => {
+            // Blocking scan + WebDAV on a worker thread so the UI stays responsive.
+            tasks.spawn(async move {
+                let outcome = tokio::task::spawn_blocking(move || {
+                    if force_webdav {
+                        crate::usage_activity::refresh_force_sync()
+                    } else {
+                        crate::usage_activity::refresh_on_usage_open()
+                    }
+                })
+                .await;
+                let modal = match outcome {
+                    Ok(o) => Box::new(o.into_modal_state(None, None)),
+                    Err(e) => Box::new(
+                        crate::views::usage_activity_modal::UsageActivityModalState::new(
+                            crate::usage_activity::MergedActivity::default(),
+                            Some(format!("refresh failed: {e}")),
+                            crate::usage_activity::load_sync_status(),
+                            None,
+                            None,
+                        ),
+                    ),
+                };
+                TaskResult::UsageActivityComplete {
+                    agent_id,
+                    session_id,
+                    modal,
+                }
+            });
+        }
         Effect::SendFeedback { agent_id, session_id, feedback_text } => {
             use xai_grok_shell::session::ClientType;
             use xai_grok_shell::session::acp_types::ClientFeedbackInput;
@@ -4537,9 +4571,7 @@ fn format_session_info(
         .filter(|id| !id.is_empty())
         .map(|id| format!("\n  Conversation ID: {id}"))
         .unwrap_or_default();
-    let version_display = xai_grok_version::display_version(
-        xai_grok_update::channel_label(),
-    );
+    let version_display = xai_grok_version::display_version(xai_grok_update::channel_label());
     let auth_lines = format_auth_lines(is_api_key_auth, api_key_env_set);
     format!(
         "{title_line}  Shell version: {version_display}\n{auth_lines}  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"

@@ -369,6 +369,33 @@ pub(super) fn handle_billing_fetched(
     // Render the `/usage` summary from the now-current cached rule.
     let summary_topup = app.auto_topup.clone();
     let tier_now = app.subscription_tier.clone();
+    // Precompute reverse-estimate outside the agent borrow.
+    let official_estimate = balance.as_ref().map(|bal| {
+        let merged = crate::usage_activity::load_merged_view();
+        let days = match bal.period_type.as_deref() {
+            Some(t) if t.contains("WEEKLY") => 7,
+            _ => 31,
+        };
+        let official = merged.official_total_last_days(days);
+        crate::usage_activity::format_official_estimate(
+            &official,
+            &crate::usage_activity::OfficialEstimateInput {
+                usage_pct: bal.usage_pct,
+                period_label: bal.usage_label().to_string(),
+                period_end: bal.period_end_display.clone(),
+                prepaid_usd: bal
+                    .prepaid_balance_cents
+                    .map(|c| c.unsigned_abs() as f64 / 100.0),
+                on_demand_used_usd: bal
+                    .on_demand_used_cents
+                    .map(|c| c.unsigned_abs() as f64 / 100.0),
+                on_demand_cap_usd: bal
+                    .on_demand_cap_cents
+                    .map(|c| c.unsigned_abs() as f64 / 100.0),
+                tier: tier_now.clone(),
+            },
+        )
+    });
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         // Gateway/chat-kind: do not attach Build coding credits.
         let mut topup = agent.auto_topup.clone();
@@ -377,17 +404,38 @@ pub(super) fn handle_billing_fetched(
         // The open usage modal renders from the mirrors updated above; only
         // its own fetch generation may settle the loading/error flags
         // (background refreshes carry nonce 0).
-        if let Some(state) = super::status::usage_modal_state_mut(agent)
-            && state.fetch_nonce == nonce
+        if let Some(state) = super::status::usage_modal_state_mut(agent) {
+            if state.fetch_nonce == nonce {
+                state.billing_loading = false;
+                state.billing_error = None;
+                state.ctx.subscription_tier = tier_now.clone();
+            }
+            // Keep Activity reverse-estimate in sync even when billing lands
+            // after the activity worker finished.
+            if let Some(act) = state.activity.as_mut() {
+                act.billing = balance.clone();
+                act.tier = tier_now.clone();
+            }
+        }
+        // Standalone Activity modal (minimal mode).
+        if let Some(crate::views::modal::ActiveModal::UsageActivity { state: act }) =
+            agent.active_modal.as_mut()
         {
-            state.billing_loading = false;
-            state.billing_error = None;
-            state.ctx.subscription_tier = tier_now;
+            act.billing = balance.clone();
+            act.tier = tier_now.clone();
         }
         if !silent && !agent.chat_kind {
             let msg = match &balance {
                 Some(bal) => {
-                    crate::views::credit_bar::format_usage_summary(bal, summary_topup.as_ref())
+                    let base = crate::views::credit_bar::format_usage_summary(
+                        bal,
+                        summary_topup.as_ref(),
+                    );
+                    if let Some(est) = &official_estimate {
+                        format!("{base}\n\n{est}")
+                    } else {
+                        base
+                    }
                 }
                 None => "No billing data available.".to_string(),
             };

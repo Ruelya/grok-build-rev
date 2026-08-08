@@ -4487,11 +4487,11 @@ impl AppView {
                         let mut flags_vec: Vec<crate::views::prompt_widget::PromptFlag<'_>> =
                             Vec::new();
                         if self.default_yolo {
-                            flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                text: "always-approve",
-                                color: None,
-                                bold: false,
-                            });
+                            let theme = crate::theme::Theme::current();
+                            flags_vec.push(crate::views::prompt_widget::session_mode_flag(
+                                &theme,
+                                "always-approve",
+                            ));
                         }
                         if !self.welcome_prompt.text().is_empty() {
                             self.welcome_tip_typing_dismissed = true;

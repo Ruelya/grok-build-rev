@@ -103,6 +103,7 @@ xai-grok-telemetry = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 backon = { workspace = true }
 chrono = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "rustls-tls", "json"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
 xai-grok-tools = { workspace = true }

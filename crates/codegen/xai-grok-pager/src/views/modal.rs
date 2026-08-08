@@ -284,6 +284,10 @@ pub enum ActiveModal {
     MemoryBrowser {
         state: Box<crate::views::memory_modal::MemoryModalState>,
     },
+    /// Interactive usage activity (/usage).
+    UsageActivity {
+        state: Box<crate::views::usage_activity_modal::UsageActivityModalState>,
+    },
     /// Settings modal (F2, /settings, palette). Boxed — large state.
     Settings {
         state: Box<crate::views::settings_modal::SettingsModalState>,
@@ -651,6 +655,7 @@ impl ActiveModal {
             | ActiveModal::DocViewer { .. }
             | ActiveModal::ShortcutsHelp { .. }
             | ActiveModal::MemoryBrowser { .. }
+            | ActiveModal::UsageActivity { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::UsageInfo { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
@@ -681,6 +686,7 @@ impl ActiveModal {
             ActiveModal::DocViewer { title, .. } => title.as_str(),
             ActiveModal::ShortcutsHelp { .. } => "Keyboard Shortcuts",
             ActiveModal::MemoryBrowser { .. } => "Memory",
+            ActiveModal::UsageActivity { .. } => "Usage activity",
             ActiveModal::Settings { .. } => crate::views::settings_modal::MODAL_TITLE,
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",
             ActiveModal::RememberNoteReview { .. } => "Memory Note",

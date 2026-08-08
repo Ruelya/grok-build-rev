@@ -1,0 +1,28 @@
+# =============================================================================
+# WebDAV multi-device usage snapshots
+# Copy to:  ~/.grok/usage/sync.toml
+# Docs: docs/webdav-sync.md  |  中文: docs/webdav-sync.zh.md
+#
+# Effective path:
+#   {url}/{remote_root}/{profile}/devices/<id>/snapshot.json
+# Each device only uploads its own file; clients ADD day×model across devices.
+# =============================================================================
+
+enabled = false
+auto_sync = true
+
+# Server origin only — remote_root + profile are appended automatically.
+# Examples:
+#   pCloud:  url = "https://ewebdav.pcloud.com"
+#   Nextcloud: url = "https://cloud.example/remote.php/dav/files/USER"
+url = "https://dav.example.com"
+username = ""
+
+# Prefer env var so the password is not stored in the file:
+password_env = "GROK_USAGE_WEBDAV_PASSWORD"
+# password = ""
+
+# Remote folder + profile (like “远程根目录” / “同步配置名”)
+remote_root = "grok-usage-sync"
+profile = "default"
+# sync_name = "default"   # alias of profile
