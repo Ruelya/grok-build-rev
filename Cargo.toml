@@ -1,7 +1,8 @@
 # Auto-generated workspace root. Prefer editing per-crate Cargo.toml files.
 
 [patch.crates-io]
-async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "95b52ebdedf42143083cf3d6f0e0be7c84e9c808" }
+# Ruelya: local fork with type-level loose Responses deserialize (#[serde(default)] on annotations/id/status)
+async-openai = { path = "third_party/async-openai" }
 
 [workspace]
 resolver = "2"
@@ -108,7 +109,7 @@ arc-swap = "1.7"
 assert_matches = "1.5.0"
 async-compression = { version = "0.4.17", default-features = false, features = ["gzip", "zstd", "tokio"] }
 async-lsp = { version = "0.2.3", features = ["tokio", "tracing"] }
-async-openai = { version = "0.33.0", features = ["responses"] }
+async-openai = { path = "third_party/async-openai", version = "0.33.1", features = ["responses"] }
 async-stream = "0.3"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
