@@ -12,7 +12,7 @@
 use crate::app::actions::Action;
 use crate::slash::command::{AppCtx, ArgItem, CommandExecCtx, CommandResult, SlashCommand};
 use crate::slash::{ModeSupport, Remedy};
-use crate::theme::{Theme, ThemeKind, cache as theme_cache};
+use crate::theme::{self, Theme, ThemeKind, cache as theme_cache};
 
 /// Switch the pager color theme.
 pub struct ThemeCommand;
@@ -61,6 +61,9 @@ impl SlashCommand for ThemeCommand {
     }
 
     fn preview_arg(&self, arg: &str) {
+        if Theme::apply_custom(arg) {
+            return;
+        }
         if let Some(kind) = ThemeKind::from_name(arg) {
             if kind.is_auto() {
                 // Preview the theme that auto mode would resolve to.
@@ -73,6 +76,9 @@ impl SlashCommand for ThemeCommand {
     }
 
     fn cancel_preview(&self, previous: &str) {
+        if Theme::apply_custom(previous) {
+            return;
+        }
         if let Some(kind) = ThemeKind::from_name(previous) {
             Theme::apply_kind(kind);
         }
@@ -81,6 +87,7 @@ impl SlashCommand for ThemeCommand {
     fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
         let current = Theme::current_kind();
         let is_auto = theme_cache::is_auto_mode();
+        let custom_active = theme::custom::active_custom_name();
         let available = ThemeKind::available();
 
         // Prepend "auto" (follow system appearance) as the first option.
@@ -94,7 +101,7 @@ impl SlashCommand for ThemeCommand {
 
         // Concrete themes — only show "(active)" when not in auto mode.
         items.extend(available.iter().map(|kind| {
-            let active = if *kind == current && !is_auto {
+            let active = if *kind == current && !is_auto && custom_active.is_none() {
                 " (active)"
             } else {
                 ""
@@ -106,6 +113,21 @@ impl SlashCommand for ThemeCommand {
                 description: format!("{}{active}", kind.display_name()),
             }
         }));
+
+        // User themes from ~/.grok/themes (and any runtime registrations).
+        for name in theme::custom::list_registered_names() {
+            let active = if custom_active.as_deref() == Some(name.as_str()) && !is_auto {
+                " (active)"
+            } else {
+                ""
+            };
+            items.push(ArgItem {
+                display: name.clone(),
+                match_text: name.clone(),
+                insert_text: name.clone(),
+                description: format!("{name} (custom){active}"),
+            });
+        }
 
         Some(items)
     }
@@ -131,9 +153,15 @@ impl SlashCommand for ThemeCommand {
                 // Normalise alias to canonical display_name.
                 CommandResult::Action(Action::SetTheme(kind.display_name().to_string()))
             }
+            None if theme::custom::is_registered(trimmed) => {
+                CommandResult::Action(Action::SetTheme(trimmed.to_string()))
+            }
             None => {
-                let all_names: Vec<&str> =
-                    ThemeKind::ALL.iter().map(|k| k.display_name()).collect();
+                let mut all_names: Vec<String> = ThemeKind::ALL
+                    .iter()
+                    .map(|k| k.display_name().to_string())
+                    .collect();
+                all_names.extend(theme::custom::list_registered_names());
                 CommandResult::Error(format!(
                     "Unknown theme: {}. Available: auto, {}",
                     trimmed,
@@ -163,6 +191,56 @@ mod tests {
         f();
         system_appearance::clear_mock();
         theme_cache::reset_for_test();
+    }
+
+    // -- custom themes --------------------------------------------------------
+
+    #[test]
+    fn run_accepts_registered_custom_theme_name() {
+        with_test_env(|| {
+            use crate::theme::custom;
+            custom::reset_for_tests();
+            let mut t = Theme::groknight();
+            t.accent_error = ratatui::style::Color::Rgb(9, 8, 7);
+            custom::register_custom_theme("user-wire", t);
+            let cmd = ThemeCommand;
+            let models = crate::acp::model_state::ModelState::default();
+            let bundle = crate::app::bundle::BundleState::default();
+            let mut ctx = CommandExecCtx {
+                models: &models,
+                session_id: None,
+                bundle_state: &bundle,
+                screen_mode: crate::app::ScreenMode::Fullscreen,
+                billing_surface_visible: true,
+                usage_command_visible: true,
+                pager_state: crate::settings::PagerLocalSnapshot {
+                    multiline_mode: false,
+                    yolo_mode: false,
+                    ..crate::settings::PagerLocalSnapshot::default()
+                },
+            };
+            match cmd.run(&mut ctx, "user-wire") {
+                CommandResult::Action(Action::SetTheme(name)) => {
+                    assert_eq!(name, "user-wire");
+                }
+                other => panic!("expected SetTheme(user-wire), got {other:?}"),
+            }
+            // Production apply path used by set_theme_inner / Theme::apply_custom:
+            assert!(
+                Theme::apply_custom("user-wire"),
+                "apply_custom must succeed for registered theme"
+            );
+            assert_eq!(
+                custom::active_custom_name().as_deref(),
+                Some("user-wire"),
+                "custom theme must be the active selection"
+            );
+            assert_eq!(
+                custom::active_custom_theme().unwrap().accent_error,
+                ratatui::style::Color::Rgb(9, 8, 7)
+            );
+            custom::reset_for_tests();
+        });
     }
 
     // -- suggest_args ---------------------------------------------------------

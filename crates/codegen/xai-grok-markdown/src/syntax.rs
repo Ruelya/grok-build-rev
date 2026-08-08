@@ -37,6 +37,15 @@ impl Syntect {
     pub fn new(theme_bytes: &[u8]) -> Self {
         let mut cursor = Cursor::new(theme_bytes);
         let theme = ThemeSet::load_from_reader(&mut cursor).expect("Failed to load theme");
+        Self::from_theme(theme)
+    }
+
+    /// Create a [`Syntect`] from an already-built syntect highlighting theme.
+    ///
+    /// Used by the pager to drive code-block colors from a semantic
+    /// [`SyntaxPalette`] (OpenCode-level theme roles) instead of a fixed
+    /// `.tmTheme` file.
+    pub fn from_theme(theme: SyntectTheme) -> Self {
         // Use two-face's extended syntax set which includes 250+ languages from bat
         let syntax_set = two_face::syntax::extra_newlines();
         Self { theme, syntax_set }

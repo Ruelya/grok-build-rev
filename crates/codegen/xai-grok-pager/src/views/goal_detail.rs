@@ -847,6 +847,28 @@ pub fn render_goal_detail(
                     "Tokens: {}",
                     format_tokens_compact(tok.min(i64::MAX as u64) as i64)
                 ));
+                // Estimated cost (list rates). Prefer per-model live totals;
+                // fall back to total tokens as 50/50 in/out (see live_cost).
+                let pricing = crate::usage_activity::load_pricing_config();
+                if pricing.live_display
+                    && !matches!(pricing.mode, crate::usage_activity::CostMode::Off)
+                {
+                    let est = if !goal.live_tokens_by_model.is_empty() {
+                        crate::usage_activity::estimate_from_live_tokens_by_model(
+                            &goal.live_tokens_by_model,
+                            pricing.mode,
+                        )
+                    } else {
+                        crate::usage_activity::estimate_from_total_tokens(
+                            tok,
+                            "grok",
+                            pricing.mode,
+                        )
+                    };
+                    if est > 0.0 && est.is_finite() {
+                        detail_parts.push(crate::usage_activity::format_live_cost(est));
+                    }
+                }
             }
             if let Some(ctx) = goal.live_context_pct {
                 detail_parts.push(format!("Context: {ctx}%"));

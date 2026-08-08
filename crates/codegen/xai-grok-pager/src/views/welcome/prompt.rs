@@ -77,6 +77,7 @@ mod tests {
         let mut prompt = PromptWidget::new();
         let info = PromptInfo {
             model_name: "test",
+            live_cost: None,
             flags: &[],
             multiline: false,
             usage_warning: None,

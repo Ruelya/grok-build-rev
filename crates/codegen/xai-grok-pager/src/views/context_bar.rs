@@ -64,7 +64,11 @@ pub struct ColorBreakpoint {
     pub color: Color,
 }
 
-/// Default breakpoints: text_primary → accent_user → warning → accent_error.
+/// Default breakpoints for context usage color — cool → warm → critical.
+///
+/// Uses the theme's semantic accents so a palette like Lonetrail's five-color
+/// band is *read out through real UI* (token pressure), not a decorative strip:
+/// assistant/info calm → tool → success → thinking/warning → user → error.
 ///
 /// Breakpoint colors are raw RGB. The final color produced by [`blend_color`]
 /// is quantized by the caller (see [`context_bar_line`]) so the output always
@@ -73,19 +77,19 @@ pub fn default_breakpoints(theme: &Theme) -> Vec<ColorBreakpoint> {
     vec![
         ColorBreakpoint {
             pct: 0.0,
-            color: theme.text_primary,
+            color: theme.accent_assistant,
         },
         ColorBreakpoint {
-            pct: 50.0,
-            color: theme.accent_user,
+            pct: 35.0,
+            color: theme.accent_tool,
         },
         ColorBreakpoint {
-            pct: 65.0,
-            color: theme.accent_user,
+            pct: 55.0,
+            color: theme.accent_success,
         },
         ColorBreakpoint {
-            pct: 75.0,
-            color: theme.warning,
+            pct: 72.0,
+            color: theme.accent_thinking,
         },
         ColorBreakpoint {
             pct: 85.0,
@@ -93,6 +97,10 @@ pub fn default_breakpoints(theme: &Theme) -> Vec<ColorBreakpoint> {
         },
         ColorBreakpoint {
             pct: 95.0,
+            color: theme.accent_user,
+        },
+        ColorBreakpoint {
+            pct: 100.0,
             color: theme.accent_error,
         },
     ]
@@ -318,12 +326,14 @@ mod tests {
         // Use unquantized theme — blend_color needs raw RGB values for lerp math.
         let theme = Theme::default();
         let bps = default_breakpoints(&theme);
-        // At 0%, should be theme.text_primary
+        // Cool end: assistant chrome
         let c0 = blend_color(0.0, &bps);
-        assert_eq!(c0, theme.text_primary);
-        // At 95%, should be theme.accent_error
+        assert_eq!(c0, theme.accent_assistant);
+        // High pressure: user/brand accent before hard error
         let c95 = blend_color(95.0, &bps);
-        assert_eq!(c95, theme.accent_error);
+        assert_eq!(c95, theme.accent_user);
+        let c100 = blend_color(100.0, &bps);
+        assert_eq!(c100, theme.accent_error);
     }
 
     /// Concatenate all span content into one string for assertions.

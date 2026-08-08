@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use super::ThemeKind;
 use super::system_appearance;
@@ -22,6 +22,10 @@ use super::system_appearance;
 /// `load_from_disk()`, then kept in sync by `set()`.
 static CURRENT: AtomicU8 = AtomicU8::new(ThemeKind::GrokNight as u8);
 static LOADED: AtomicBool = AtomicBool::new(false);
+/// Monotonic generation bumped on every live theme change (builtin **or**
+/// custom). Markdown / syntax caches key on this because custom themes do
+/// not change [`current_kind`] (they sit on top of a base ThemeKind).
+static GENERATION: AtomicU64 = AtomicU64::new(1);
 #[cfg(any(test, feature = "test-support"))]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -101,6 +105,20 @@ pub fn current_kind() -> ThemeKind {
 pub fn set(kind: ThemeKind) {
     CURRENT.store(kind as u8, Ordering::Relaxed);
     LOADED.store(true, Ordering::Release);
+}
+
+/// Current theme generation (starts at 1). Compare against a cached copy to
+/// detect any theme flip — including custom ↔ custom where [`current_kind`]
+/// is unchanged.
+#[must_use]
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
+
+/// Bump the theme generation. Call from every path that changes what
+/// [`crate::theme::Theme::current`] or syntax palette returns.
+pub fn bump_generation() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 // -- Terminal-native lock (minimal mode) --------------------------------------
@@ -264,6 +282,10 @@ pub fn resolve_auto() -> ThemeKind {
 /// Checks `[ui].theme` first (the canonical location), then falls back
 /// to a top-level `theme` key for backwards compatibility.
 fn load_from_disk() -> Option<ThemeKind> {
+    // Ensure ~/.grok/themes is registered before reading [ui].theme so a
+    // custom name can be activated on startup.
+    let _ = super::custom::load_default_user_themes();
+
     let root = xai_grok_config::load_effective_config_disk_only().ok()?;
     let table = root.as_table()?;
     // Canonical: [ui] section
@@ -272,8 +294,17 @@ fn load_from_disk() -> Option<ThemeKind> {
         .and_then(|ui| ui.get("theme"))
         .and_then(|v| v.as_str())
         // Fallback: top-level `theme` key (legacy)
-        .or_else(|| table.get("theme").and_then(|v| v.as_str()));
-    value.and_then(ThemeKind::from_name)
+        .or_else(|| table.get("theme").and_then(|v| v.as_str()))?;
+    if let Some(kind) = ThemeKind::from_name(value) {
+        return Some(kind);
+    }
+    // Custom theme name in config: apply and leave CURRENT as GrokNight
+    // (Theme::current prefers active custom over kind).
+    if super::custom::apply_custom_theme(value) {
+        tracing::info!(theme = %value, "applied custom theme from config");
+        return Some(ThemeKind::GrokNight);
+    }
+    None
 }
 
 /// Load auto-theme configuration from the effective config.

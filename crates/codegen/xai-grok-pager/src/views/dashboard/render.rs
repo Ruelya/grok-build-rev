@@ -2854,16 +2854,15 @@ fn paint_dispatch_config_badge(
     // Mode flag, styled exactly like the chat prompt's mode flags.
     let mut flags: Vec<PromptFlag> = Vec::new();
     match state.pending_mode {
-        DashboardDispatchMode::Plan => flags.push(PromptFlag {
-            text: "plan",
-            color: Some(theme.accent_plan),
-            bold: false,
-        }),
-        DashboardDispatchMode::AlwaysApprove => flags.push(PromptFlag {
-            text: "always-approve",
-            color: None,
-            bold: false,
-        }),
+        DashboardDispatchMode::Plan => {
+            flags.push(crate::views::prompt_widget::session_mode_flag(theme, "plan"));
+        }
+        DashboardDispatchMode::AlwaysApprove => {
+            flags.push(crate::views::prompt_widget::session_mode_flag(
+                theme,
+                "always-approve",
+            ));
+        }
         DashboardDispatchMode::Normal => {}
     }
 
@@ -2873,6 +2872,7 @@ fn paint_dispatch_config_badge(
 
     let info = PromptInfo {
         model_name: &model_label,
+        live_cost: None,
         flags: &flags,
         multiline: state.multiline_mode,
         usage_warning: None,

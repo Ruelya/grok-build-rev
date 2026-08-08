@@ -12,6 +12,7 @@
 
 pub mod cache;
 pub mod color_support;
+pub mod custom;
 pub mod env_appearance;
 mod grokday;
 mod groknight;
@@ -19,9 +20,12 @@ pub mod md_style;
 pub mod osc11;
 mod oscura;
 mod rosepine;
+pub mod syntax_palette;
 pub mod system_appearance;
 mod terminal_default;
 pub mod tokyonight;
+
+pub use syntax_palette::SyntaxPalette;
 
 pub use color_support::quantize;
 pub use tokyonight::{Theme, pulse_brightness, wave_brightness};
@@ -268,15 +272,21 @@ impl Theme {
         if cache::terminal_native_locked() {
             return Self::terminal_default().quantized(level);
         }
-        let base = match cache::current_kind() {
-            ThemeKind::GrokNight => Self::groknight(),
-            ThemeKind::TokyoNight => Self::tokyonight(),
-            ThemeKind::GrokDay => Self::grokday(),
-            ThemeKind::RosePineMoon => Self::rosepine_moon(),
-            ThemeKind::OscuraMidnight => Self::oscura_midnight(),
-            // Auto is resolved to a concrete theme before being stored;
-            // if reached, fall back to GrokNight.
-            ThemeKind::Auto => Self::groknight(),
+        // User-defined themes (registered via `custom::register_custom_theme`)
+        // take precedence over the builtin ThemeKind cache when active.
+        let base = if let Some(custom) = custom::active_custom_theme() {
+            custom
+        } else {
+            match cache::current_kind() {
+                ThemeKind::GrokNight => Self::groknight(),
+                ThemeKind::TokyoNight => Self::tokyonight(),
+                ThemeKind::GrokDay => Self::grokday(),
+                ThemeKind::RosePineMoon => Self::rosepine_moon(),
+                ThemeKind::OscuraMidnight => Self::oscura_midnight(),
+                // Auto is resolved to a concrete theme before being stored;
+                // if reached, fall back to GrokNight.
+                ThemeKind::Auto => Self::groknight(),
+            }
         };
         // Sample polarity pre-quantization — post-quantize `bg_base` may
         // land on a named/indexed entry whose luminance is host-palette-
@@ -332,10 +342,33 @@ impl Theme {
         if cache::terminal_native_locked() {
             return cache::current_kind();
         }
+        // Selecting a builtin theme clears any custom theme activation.
+        custom::clear_custom_theme();
         let effective = Self::clamp_to_terminal(kind);
         cache::set(effective);
+        // Invalidate syntax palette cache and notify scrollback to re-style.
+        crate::syntax::invalidate_palette_cache();
+        cache::bump_generation();
         apply_cursor_color();
         effective
+    }
+
+    /// Apply a registered user theme by name. Returns `true` when applied.
+    pub fn apply_custom(name: &str) -> bool {
+        if cache::terminal_native_locked() {
+            return false;
+        }
+        if custom::apply_custom_theme(name) {
+            // Ensure next get_syntect() uses this theme's [syntax] palette.
+            crate::syntax::invalidate_palette_cache();
+            // Custom themes do not change ThemeKind — generation is how
+            // MarkdownContent / edit HL detect the flip for live re-render.
+            cache::bump_generation();
+            apply_cursor_color();
+            true
+        } else {
+            false
+        }
     }
 
     /// Clamp a theme kind to what the terminal supports.

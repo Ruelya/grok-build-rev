@@ -482,30 +482,21 @@ fn paint_peek_config_badge(
     // permission mode (the gate in xai-grok-shell), so `plan` alone is the
     // honest badge even when yolo stays armed underneath.
     if panel.plan_mode {
-        flags.push(PromptFlag {
-            text: "plan",
-            color: Some(theme.accent_plan),
-            bold: false,
-        });
+        flags.push(crate::views::prompt_widget::session_mode_flag(theme, "plan"));
     } else if panel.auto_approve {
-        flags.push(PromptFlag {
-            text: "always-approve",
-            color: None,
-            bold: false,
-        });
+        flags.push(crate::views::prompt_widget::session_mode_flag(
+            theme,
+            "always-approve",
+        ));
     } else if panel.auto {
-        // Auto (LLM classifier) mode. Blue `accent_system`.
-        flags.push(PromptFlag {
-            text: "auto",
-            color: Some(theme.accent_system),
-            bold: false,
-        });
+        flags.push(crate::views::prompt_widget::session_mode_flag(theme, "auto"));
     }
     if model_label.is_empty() && flags.is_empty() && !multiline {
         return;
     }
     let info = PromptInfo {
         model_name: &model_label,
+        live_cost: None,
         flags: &flags,
         multiline,
         usage_warning: None,

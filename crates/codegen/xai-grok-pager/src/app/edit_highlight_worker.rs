@@ -54,8 +54,8 @@ pub enum EditHlOutcome {
     /// Full-file styles for new-side lines (hunk text verified equal to disk).
     Ready {
         by_new_line: Arc<HashMap<usize, EditLineStyles>>,
-        /// Theme the styles were baked under (paint skips a mismatched map).
-        theme: crate::theme::ThemeKind,
+        /// Theme generation the styles were baked under (paint skips a mismatched map).
+        theme_gen: u64,
     },
     /// Cap, I/O, non-UTF8, mismatch, or missing syntax — stay hunk-only.
     Failed,
@@ -157,13 +157,13 @@ fn run_job(job: &EditHlJob) -> EditHlOutcome {
     }
 
     let path = std::path::Path::new(&job.path);
-    // Read the theme beside the syntect walk so the result is labeled with the
-    // kind its foregrounds were actually baked under.
-    let theme = crate::theme::cache::current_kind();
+    // Capture generation beside the syntect walk so paint can reject a map
+    // baked under a different theme (custom or builtin).
+    let theme_gen = crate::theme::cache::generation();
     match compute_file_scoped_styles(path, &file_text, &job.hunks) {
         Some(by_new_line) => EditHlOutcome::Ready {
             by_new_line: Arc::new(by_new_line),
-            theme,
+            theme_gen,
         },
         None => {
             tracing::debug!(
@@ -323,8 +323,14 @@ impl AgentView {
             }
 
             match result.outcome {
-                EditHlOutcome::Ready { by_new_line, theme } => {
-                    edit.highlight = EditHighlightPhase::FileScoped { by_new_line, theme };
+                EditHlOutcome::Ready {
+                    by_new_line,
+                    theme_gen,
+                } => {
+                    edit.highlight = EditHighlightPhase::FileScoped {
+                        by_new_line,
+                        theme_gen,
+                    };
                     entry.invalidate_cache();
                     redraw = true;
                     tracing::debug!(
@@ -490,9 +496,12 @@ mod tests {
             hunks: sample_hunks(),
         };
         match run_job(&job) {
-            EditHlOutcome::Ready { by_new_line, theme } => {
+            EditHlOutcome::Ready {
+                by_new_line,
+                theme_gen,
+            } => {
                 assert!(by_new_line.contains_key(&1));
-                assert_eq!(theme, crate::theme::cache::current_kind());
+                assert_eq!(theme_gen, crate::theme::cache::generation());
             }
             EditHlOutcome::Failed => panic!("expected Ready for temp python file"),
         }
@@ -552,7 +561,7 @@ mod tests {
                 path: "probe.py".into(),
                 outcome: EditHlOutcome::Ready {
                     by_new_line: Arc::new(HashMap::new()),
-                    theme: crate::theme::cache::current_kind(),
+                    theme_gen: crate::theme::cache::generation(),
                 },
             })
             .unwrap();

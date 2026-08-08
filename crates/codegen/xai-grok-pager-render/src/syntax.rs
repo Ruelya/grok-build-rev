@@ -1,38 +1,28 @@
 //! Syntax highlighting initialization.
 //!
-//! Provides lazily-initialized `Syntect` instances for code highlighting.
-//! Dark themes (GrokNight, TokyoNight) share `grok-night.tmTheme`;
-//! GrokDay uses `grok-day.tmTheme` with deepened colors for light backgrounds.
+//! Code-block colors come from a semantic [`SyntaxPalette`] (OpenCode-level
+//! roles). Syntect only tokenizes; the palette paints keyword/string/comment/…
+//!
+//! Builtin and custom themes share this pipeline. Custom themes may set
+//! `[syntax]` in their TOML; otherwise roles are derived from UI/markdown
+//! colors.
 //!
 //! ## Minimal / terminal-native lock
 //!
 //! While [`crate::theme::cache::terminal_native_locked`] is set, chrome uses
 //! [`Theme::terminal_default`](crate::theme::Theme::terminal_default) and
-//! `current_kind()` is a nominal `GrokNight` (so leftover kind-keyed paths
-//! still resolve). Syntect therefore loads the night `.tmTheme` whose pastel
-//! RGB tokens, after naive ANSI-16 quantization, collapse to **White** —
-//! invisible on light terminal profiles.
-//!
-//! Under the lock we do **not** detect light/dark. Instead:
-//! 1. Near-gray tokens → `Color::Reset` (terminal default fg; always readable).
-//! 2. Chromatic tokens → base ANSI-16 accents (Red/Green/Yellow/Blue/Magenta/Cyan),
-//!    never White/Black/bright variants.
-//!
-//! That matches the "first + second" minimal syntax policy: default-fg baseline
-//! plus a dual-polarity accent map, with zero polarity detection.
+//! token colors are remapped via [`polarity_safe_syntax_fg`].
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 pub use xai_grok_markdown::Syntect;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-use crate::theme::ThemeKind;
-
-static SYNTECT_GROKNIGHT: OnceLock<Syntect> = OnceLock::new();
-static SYNTECT_TOKYONIGHT: OnceLock<Syntect> = OnceLock::new();
-static SYNTECT_GROKDAY: OnceLock<Syntect> = OnceLock::new();
+use crate::theme::syntax_palette::SyntaxPalette;
+use crate::theme::{Theme, ThemeKind, custom};
 
 /// Convert syntect style to ratatui foreground-only style, quantized for
 /// terminal color support (or polarity-safe under the terminal-native lock).
@@ -65,22 +55,13 @@ pub fn syntect_rgb_to_fg(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Dual-polarity-safe ANSI mapping for syntax tokens on a transparent canvas.
-///
-/// - Low chroma (gray / near-gray body text) → [`Color::Reset`] so the host
-///   default fg carries contrast on both light and dark profiles.
-/// - Saturated hues → base ANSI Red/Green/Yellow/Blue/Magenta/Cyan only.
-///
-/// Never returns White, Black, or bright (Light*) variants — those are the
-/// colors that vanish on the opposite polarity after naive RGB→ANSI16.
 pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     let max = r.max(g).max(b) as i32;
     let min = r.min(g).min(b) as i32;
     let chroma = max - min;
-    // Night default body (~#c8c8c8) and dim comments are near-gray.
     if chroma < 40 {
         return Color::Reset;
     }
-    // Integer HSV hue in degrees [0, 360).
     let (ri, gi, bi) = (r as i32, g as i32, b as i32);
     let h = if max == ri {
         let mut h = (gi - bi) * 60 / chroma;
@@ -93,8 +74,6 @@ pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     } else {
         (ri - gi) * 60 / chroma + 240
     };
-    // Magenta starts at 255° so Tokyo Night purple (#bb9af7, ~261°) lands
-    // Magenta rather than Blue; pure blues (~221°) stay Blue.
     match h {
         0..30 | 330..=360 => Color::Red,
         30..90 => Color::Yellow,
@@ -106,10 +85,6 @@ pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Highlight a single line of source, falling back to plain text style.
-///
-/// Under the terminal-native lock, syntect tokens are remapped via
-/// [`polarity_safe_syntax_fg`]; if highlighting fails, `fallback` (typically
-/// [`Theme::primary`](crate::theme::Theme::primary) = Reset) is used.
 pub fn highlight_line(
     text: &str,
     highlighter: &mut Option<syntect::easy::HighlightLines<'_>>,
@@ -137,24 +112,68 @@ pub fn highlight_line(
     vec![Span::styled(text.to_string(), fallback)]
 }
 
-/// Returns the syntect instance matching the active theme.
-///
-/// Note: while the terminal-native lock is engaged, [`Theme::current_kind`]
-/// reports a nominal `GrokNight`, so this returns the night theme. Token
-/// colors are remapped in [`syntect_to_ratatui_fg`] — do not load a day
-/// theme based on OS/terminal polarity detection.
-pub fn get_syntect() -> &'static Syntect {
-    match crate::theme::Theme::current_kind() {
-        ThemeKind::GrokNight
-        | ThemeKind::RosePineMoon
-        | ThemeKind::OscuraMidnight
-        | ThemeKind::Auto => SYNTECT_GROKNIGHT
-            .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-night.tmTheme"))),
-        ThemeKind::TokyoNight => SYNTECT_TOKYONIGHT
-            .get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme"))),
-        ThemeKind::GrokDay => SYNTECT_GROKDAY
-            .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-day.tmTheme"))),
+// ── Palette-driven Syntect cache ──────────────────────────────────────────
+
+static SYNTECT_CACHE: OnceLock<Mutex<HashMap<String, &'static Syntect>>> = OnceLock::new();
+
+fn syntect_cache() -> &'static Mutex<HashMap<String, &'static Syntect>> {
+    SYNTECT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop all palette-built Syntect instances (e.g. after theme test reset).
+pub fn invalidate_palette_cache() {
+    if let Ok(mut g) = syntect_cache().lock() {
+        g.clear();
     }
+}
+
+/// Drop one cache entry (e.g. after re-registering a custom theme).
+pub fn invalidate_palette_cache_key(key: &str) {
+    if let Ok(mut g) = syntect_cache().lock() {
+        g.remove(key);
+    }
+}
+
+fn current_palette_key_and_palette() -> (String, SyntaxPalette) {
+    if let Some(name) = custom::active_custom_name() {
+        let key = format!("c:{name}");
+        let palette = custom::active_custom_syntax().unwrap_or_else(|| {
+            custom::active_custom_theme()
+                .map(|t| SyntaxPalette::from_ui_theme(&t))
+                .unwrap_or_else(|| SyntaxPalette::for_kind(ThemeKind::GrokNight))
+        });
+        return (key, palette);
+    }
+    let kind = Theme::current_kind();
+    let key = format!("k:{}", kind.display_name());
+    (key, SyntaxPalette::for_kind(kind))
+}
+
+/// Returns the syntect instance matching the active theme's syntax palette.
+///
+/// Builtin and custom themes use the same palette → syntect theme pipeline.
+/// Under the terminal-native lock, token colors are still remapped in
+/// [`syntect_to_ratatui_fg`].
+pub fn get_syntect() -> &'static Syntect {
+    let (key, palette) = current_palette_key_and_palette();
+    {
+        if let Ok(g) = syntect_cache().lock()
+            && let Some(s) = g.get(&key)
+        {
+            return *s;
+        }
+    }
+    let syn = Syntect::from_theme(palette.to_syntect_theme());
+    let leaked: &'static Syntect = Box::leak(Box::new(syn));
+    if let Ok(mut g) = syntect_cache().lock() {
+        // Another thread may have inserted first; prefer existing to avoid
+        // unbounded leaks under races (rare).
+        if let Some(existing) = g.get(&key) {
+            return *existing;
+        }
+        g.insert(key, leaked);
+    }
+    leaked
 }
 
 #[cfg(test)]
@@ -177,7 +196,6 @@ mod tests {
 
     #[test]
     fn polarity_safe_grays_are_reset() {
-        // Night default body / comments.
         assert_eq!(polarity_safe_syntax_fg(0xc8, 0xc8, 0xc8), Color::Reset);
         assert_eq!(polarity_safe_syntax_fg(0x6c, 0x6c, 0x6c), Color::Reset);
         assert_eq!(polarity_safe_syntax_fg(0xb2, 0xb2, 0xb2), Color::Reset);
@@ -186,16 +204,15 @@ mod tests {
 
     #[test]
     fn polarity_safe_never_emits_white_or_black() {
-        // Common night-theme pastels that naive ANSI16 maps to White.
         let samples = [
-            (0xbb, 0x9a, 0xf7), // magenta
-            (0x7d, 0xcf, 0xff), // cyan
-            (0x7a, 0xa2, 0xf7), // blue
-            (0xff, 0x9e, 0x64), // orange
-            (0xf7, 0x76, 0x8e), // red
-            (0xe0, 0xaf, 0x68), // yellow
-            (0x9e, 0xce, 0x6a), // green
-            (0xc8, 0xc8, 0xc8), // gray body
+            (0xbb, 0x9a, 0xf7),
+            (0x7d, 0xcf, 0xff),
+            (0x7a, 0xa2, 0xf7),
+            (0xff, 0x9e, 0x64),
+            (0xf7, 0x76, 0x8e),
+            (0xe0, 0xaf, 0x68),
+            (0x9e, 0xce, 0x6a),
+            (0xc8, 0xc8, 0xc8),
         ];
         for (r, g, b) in samples {
             let c = polarity_safe_syntax_fg(r, g, b);
@@ -222,7 +239,7 @@ mod tests {
     fn polarity_safe_chromatic_buckets() {
         assert_eq!(polarity_safe_syntax_fg(0xf7, 0x76, 0x8e), Color::Red);
         assert_eq!(polarity_safe_syntax_fg(0xe0, 0xaf, 0x68), Color::Yellow);
-        assert_eq!(polarity_safe_syntax_fg(0x9e, 0xce, 0x6a), Color::Yellow); // lime → yellow bucket
+        assert_eq!(polarity_safe_syntax_fg(0x9e, 0xce, 0x6a), Color::Yellow);
         assert_eq!(polarity_safe_syntax_fg(0x7d, 0xcf, 0xff), Color::Cyan);
         assert_eq!(polarity_safe_syntax_fg(0x7a, 0xa2, 0xf7), Color::Blue);
         assert_eq!(polarity_safe_syntax_fg(0xbb, 0x9a, 0xf7), Color::Magenta);
@@ -231,7 +248,6 @@ mod tests {
     #[test]
     fn syntect_rgb_to_fg_uses_polarity_safe_when_locked() {
         with_native_lock(true, || {
-            // Pastel that naive quantize would turn White.
             assert_eq!(syntect_rgb_to_fg(0xc8, 0xc8, 0xc8), Color::Reset);
             assert_eq!(syntect_rgb_to_fg(0xbb, 0x9a, 0xf7), Color::Magenta);
         });
@@ -265,5 +281,41 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn custom_syntax_palette_paints_keyword() {
+        custom::reset_for_tests();
+        let mut theme = Theme::groknight();
+        theme.accent_error = Color::Rgb(1, 2, 3);
+        let palette = SyntaxPalette {
+            default: Color::Rgb(200, 200, 200),
+            comment: Color::Rgb(100, 100, 100),
+            keyword: Color::Rgb(0xff, 0x00, 0x11),
+            string: Color::Rgb(0x00, 0xff, 0x22),
+            number: Color::Rgb(0x33, 0x44, 0x55),
+            function: Color::Rgb(0x66, 0x77, 0x88),
+            type_name: Color::Rgb(0x99, 0xaa, 0xbb),
+            variable: Color::Rgb(0xcc, 0xdd, 0xee),
+            operator: Color::Rgb(0x10, 0x20, 0x30),
+            punctuation: Color::Rgb(0x40, 0x50, 0x60),
+            constant: Color::Rgb(0x70, 0x80, 0x90),
+            property: Color::Rgb(0xa0, 0xb0, 0xc0),
+        };
+        custom::register_custom_theme_with_syntax("palette-test", theme, palette);
+        assert!(custom::apply_custom_theme("palette-test"));
+        let syn = get_syntect();
+        let has_keyword_color = syn.theme.scopes.iter().any(|item| {
+            item.style
+                .foreground
+                .is_some_and(|c| c.r == 0xff && c.g == 0x00 && c.b == 0x11)
+        });
+        assert!(
+            has_keyword_color,
+            "expected keyword #ff0011 in palette-built syntect theme"
+        );
+        // Smoke: highlighter accepts rust token under palette theme.
+        assert!(syn.highlight_lines_for_token("rust").is_some());
+        custom::reset_for_tests();
     }
 }

@@ -718,6 +718,7 @@ pub fn render_welcome(
             let msg = error.as_deref().map(|e| (e, theme.accent_error));
             let info = PromptInfo {
                 model_name: params.model_name,
+                live_cost: None,
                 flags: params.flags,
                 multiline: false,
                 usage_warning: None,
@@ -2192,6 +2193,7 @@ fn render_welcome_done(
         };
         let usage_info = PromptInfo {
             model_name: p.model_name,
+            live_cost: None,
             flags: p.flags,
             multiline: false,
             usage_warning: usage_warning_text.as_deref(),
