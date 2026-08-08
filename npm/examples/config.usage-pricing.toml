@@ -1,0 +1,15 @@
+# Example: usage pricing + live cost
+# Copy keys into ~/.grok/usage/pricing.toml (preferred) or document next to config.
+#
+# Full guide: docs/usage-pricing.md
+
+# --- ~/.grok/usage/pricing.toml ---
+mode = "all"                 # off | all | official_only
+live_display = true          # prompt line: model · $cost · mode
+auto_sync_catalog = true     # pull models.dev on /usage sync
+
+# --- Optional custom rates (~/.grok/usage/prices/custom.toml) ---
+# [models."my-proxy/gpt-x"]
+# input = 0.5
+# output = 1.5
+# cache_read = 0.05

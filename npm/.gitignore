@@ -1,0 +1,6 @@
+local/
+dist/
+
+artifacts/cache/
+node_modules/
+*.tgz

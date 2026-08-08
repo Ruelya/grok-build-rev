@@ -1,0 +1,414 @@
+# =============================================================================
+# Grok Build — config_example.toml
+# Copy fields you need into:  %USERPROFILE%\.grok\config.toml  (or $GROK_HOME)
+# All keys are optional unless noted. Comments document accepted values.
+# Fork extras (openai_responses, toolset.style, auto_prompt_cache_key, recap)
+# are marked  # [fork]
+# =============================================================================
+
+# Top-level MCP deny-list (server names)
+disabled_mcp_servers = []
+
+# -----------------------------------------------------------------------------
+# [cli]
+# -----------------------------------------------------------------------------
+[cli]
+auto_update = false
+# installer = "npm" | "cargo" | …
+installer = "npm"
+# npm_registry = "https://registry.npmjs.org"
+# channel = "alpha" | "stable"
+# use_leader = false
+# show_tips = true
+# worktree_type = "…"
+# session_registry = false
+# session_picker_grouped = true
+# dismissed_version = "0.0.0"
+# minimum_version / maximum_version / required_minimum_version / required_maximum_version
+
+# -----------------------------------------------------------------------------
+# [ui]
+# -----------------------------------------------------------------------------
+[ui]
+max_thoughts_width = 120
+# theme: auto | groknight | grokday | tokyonight | rosepine_moon | oscura_midnight
+#        | <custom file stem under ~/.grok/themes/*.toml>
+theme = "auto"
+# ui_theme = "…"                    # alias
+# auto_dark_theme = "Lonetrail"
+# auto_light_theme = "Lonetrail-light"
+fork_secondary_model = "grok-build"
+yolo = false
+compact_mode = false
+# simple_mode = false
+# permission_mode: always-approve | ask | …
+permission_mode = "always-approve"
+# approval_mode = "…"               # legacy alias of permission_mode
+# default_selected_permission = "allow_once" | "allow_always" | "reject"
+# show_timestamps = true
+show_timeline = true
+# page_flip_on_send = true
+scroll_speed = 65
+# scroll_mode = "auto" | "wheel" | "trackpad"
+# invert_scroll = false
+scroll_lines = 4
+# vim_mode = false
+# render_mermaid = "auto" | "on" | "off"
+# hunk_tracker_mode = "agent_only" | "all_dirty" | "off"
+# voice_capture_mode = "hold" | "toggle"
+# voice_stt_language = "en" | "auto" | …
+# voice_keybind_enabled = true
+# mouse_reporting_toggle = false
+# cancel_subagents_on_turn_cancel = "ask" | "always_stop" | "always_continue"
+# remember_tool_approvals = true
+# keep_text_selection = "flash" | "hold" | "word_select"
+# selection_highlight_duration_ms = 0
+# show_thinking_blocks = true
+# group_tool_verbs = true
+collapsed_edit_blocks = true
+# prompt_suggestions = true
+# cursor_blink = false
+# screen_mode = "fullscreen" | "minimal"
+# double_click_action = "word_select"
+combine_queued_prompts = false
+
+# [ui.contextual_hints]
+# undo = true
+# plan_mode = true
+# image_input = true
+# send_now = true
+# small_screen = true
+
+# [ui.display_refresh]
+# probe_enabled = true
+# auto_cadence_enabled = false
+# floor_ms = 8
+# ceiling_ms = 16
+
+# -----------------------------------------------------------------------------
+# [models]  — catalog defaults
+# -----------------------------------------------------------------------------
+[models]
+default = "grok-4.5"
+default_reasoning_effort = "high"   # none | low | medium | high | …
+# recap = "grok-4.5"                 # [fork] dedicated /recap model
+# web_search = "…"
+# session_summary = "…"
+# image_description = "…"
+# prompt_suggestion = "…"
+# allowed_models = ["grok-*", "sol"]
+# hidden_models = []
+# disabled_models = []
+# agent_type = "grok-build"
+# temperature = 1.0
+# top_p = 1.0
+# max_completion_tokens = 8192
+# max_retries = 3
+# inference_idle_timeout_secs = 120
+# stream_tool_calls = true
+# [models.extra_headers]
+# X-Custom = "value"
+
+# -----------------------------------------------------------------------------
+# [model.<id>]  — per-model overrides (table name = catalog key)
+# -----------------------------------------------------------------------------
+# [model.example]
+# model = "wire-model-id"
+# name = "Display Name"
+# description = "…"
+# base_url = "https://api.example.com/v1"
+# api_base_url = "https://api.example.com/v1"
+# api_key = "sk-…"
+# env_key = "OPENAI_API_KEY"          # or ["KEY_A", "KEY_B"]
+# auth_provider = "my-provider"       # see [auth_provider.*]
+# model_provider = "my-provider"
+# api_backend — protocol for this model (snake_case; aliases like openai-responses ok)
+#   Stock:     "chat_completions" (default) | "responses" | "messages"
+#   [fork] loose gateway siblings (type-level accept missing fields; no synthetic JSON fill):
+#              "openai_chat_completions" | "openai_responses" | "anthropic_messages"
+#   See docs/api-backends.md · examples/config.api-backends.toml
+# api_backend = "openai_responses"
+# auto_prompt_cache_key = true        # [fork] main-turn pck (Responses family only)
+# temperature = 1.0
+# top_p = 1.0
+# max_completion_tokens = 16384
+# context_window = 200000
+# auto_compact_threshold_percent = 80
+# system_prompt_label = "…"
+# use_concise = false
+# agent_type = "grok-build"
+# inference_idle_timeout_secs = 120
+# max_retries = 3
+# hidden = false
+# supported_in_api = true
+# reasoning_effort = "high"
+# supports_reasoning_effort = true
+# supports_backend_search = false
+# stream_tool_calls = true
+# show_model_fingerprint = false
+# # reasoning_efforts = […]          # advanced effort menu options
+# # compactions_remaining / compaction_at_tokens
+# [model.example.extra_headers]
+# Authorization = "Bearer …"
+# [model.example.query_params]
+# # api-version = "2024-…"
+# [model.example.env_http_headers]
+# # X-From-Env = "SOME_ENV"
+
+# Practical BYOK example (OpenAI-compatible Responses / AxonHub):
+# [model.sol]
+# name = "sol"
+# model = "your-upstream-model"
+# base_url = "https://your-gateway/v1"
+# api_key = "…"
+# api_backend = "openai_responses"    # [fork] loose Responses parse
+# auto_prompt_cache_key = true
+# context_window = 200000
+# reasoning_effort = "high"
+#
+# Loose Chat Completions / Anthropic Messages (gateways):
+# api_backend = "openai_chat_completions"
+# api_backend = "anthropic_messages"
+
+# -----------------------------------------------------------------------------
+# [toolset]  — [fork] style applies to main session + subagents
+# -----------------------------------------------------------------------------
+[toolset]
+# style = "grok-build"   # unset = each agent keeps DEFAULT tools
+# Known style: grok-build | grok-build-concise | grok-build-plan
+#              codex | explore | plan | grok-computer
+# file_toolset = "standard" | "hashline"
+# [toolset.bash]
+# # timeout / limits (implementation-specific)
+# [toolset.web_fetch]
+# [toolset.ask_user_question]
+# [toolset.hashline]
+# [toolset.web_search]
+
+# -----------------------------------------------------------------------------
+# [subagents]
+# -----------------------------------------------------------------------------
+[subagents]
+enabled = true
+# max_depth = 3
+
+# [subagents.toggle]   # false = hide from Task catalog; omitted = enabled
+# general-purpose = true
+# explore = true
+# plan = true
+# grok-build = true
+# grok-build-concise = true
+# grok-build-plan = true
+# grok-build-plan-no-subagents = true
+# grok-build-ask-user = true
+# codex = true
+# opencode = true
+# browser-use = true
+# grok-build-orchestrator = true
+
+# [subagents.models]
+# explore = "grok-3-fast"
+# plan = "grok-4.5"
+
+# [subagents.roles.researcher]
+# description = "Deep research"
+# default_capability_mode = "read-only"   # read-only | read-write | execute | all
+# model = "grok-4.5"
+# # prompt_file = ".grok/prompts/researcher.md"
+
+# [subagents.personas.concise]
+# instructions = "Be extremely concise."
+# # instructions_file = ".grok/personas/concise.md"
+
+# -----------------------------------------------------------------------------
+# [agent]  — default agent definition for sessions
+# -----------------------------------------------------------------------------
+# [agent]
+# type = "grok-build"                 # or path / name of agent definition
+
+# -----------------------------------------------------------------------------
+# [session]
+# -----------------------------------------------------------------------------
+# [session]
+# # session-level knobs (see SessionConfig in source)
+
+# -----------------------------------------------------------------------------
+# [endpoints]
+# -----------------------------------------------------------------------------
+# [endpoints]
+# cli_chat_proxy_base_url = "https://…"
+# xai_api_base_url = "https://api.x.ai"
+# models_base_url = "https://…"
+# models_list_url = "https://…/models"
+# feedback_base_url = "…"
+# trace_upload_url = "…"
+# managed_config_url = "…"
+# deployment_key = "…"
+# management_api_key = "…"
+# # OTEL / internal OTLP fields: otel_exporter_otlp_endpoint, …
+# # grok_internal_otlp_traces_endpoint, grok_internal_otlp_headers, …
+
+# -----------------------------------------------------------------------------
+# [auth] / [auth_provider.<name>]  — OAuth / credential helpers
+# -----------------------------------------------------------------------------
+# [auth]
+# # same shape as grok.com auth section when used
+
+# [auth_provider.my-oidc]
+# # type / issuer / client_id / … (see AuthProviderConfig)
+
+# -----------------------------------------------------------------------------
+# [mcp_servers.<name>]  — local / remote MCP
+# -----------------------------------------------------------------------------
+# [mcp_servers.example]
+# # command = ["npx", "-y", "some-mcp"]
+# # args / env / url / headers / enabled / type = "local" | "remote"
+# # startup_timeout_secs
+
+# [disabled_mcp_tools.example]
+# # tools = ["dangerous_tool"]
+
+# [mcp]
+# # max_output_bytes = 20000
+# # startup_timeout_secs = 30
+
+# -----------------------------------------------------------------------------
+# [plugins] / [skills] / [marketplace]
+# -----------------------------------------------------------------------------
+[plugins]
+# disabled = []
+# enabled = []
+
+[skills]
+paths = []
+ignore = []
+disabled = []
+server_skill_dirs = []
+bundled_skill_dirs = []
+
+[marketplace]
+# official_marketplace_auto_installed = true
+# default_skills_installs_purged = true
+# [[marketplace.sources]]
+# name = "xAI Official"
+# git = "https://github.com/xai-org/plugin-marketplace.git"
+
+# -----------------------------------------------------------------------------
+# [permission] / [auto_mode] / [sandbox] / [tools]
+# -----------------------------------------------------------------------------
+# [permission]
+# # rules / allow / deny patterns
+
+# [auto_mode]
+# # Auto permission-mode configuration
+
+# [sandbox]
+# profile = "off" | "workspace" | "devbox" | "read-only" | "strict"
+# auto_allow_bash = false
+
+# [tools]
+# # per-tool enable/disable and options
+
+# -----------------------------------------------------------------------------
+# [memory] / [compaction] / [storage] / [suggestions]
+# -----------------------------------------------------------------------------
+# [memory]
+# # enabled / embedding / search / flush / dream / …
+
+# [compaction]
+# # memory_flush / pruning subsections
+
+# [storage]
+# # cleanup_ttl_days / …
+
+# [suggestions]
+# # shell command suggestion pipeline
+
+# -----------------------------------------------------------------------------
+# [telemetry] / [harness] / [relay] / [hub] / [worktree]
+# -----------------------------------------------------------------------------
+# [telemetry]
+# # otel_enabled / …
+
+# [harness]
+# block_for_upload = false
+# upload_flush_timeout_secs = 60
+
+# [relay]
+# enabled = false
+
+# [hub]
+# url = "wss://hub.example/ws"
+
+# [worktree.auto_gc]
+# enabled = true
+# max_age_secs = 604800
+# min_interval_secs = 3600
+# dry_run = false
+# include_orphan_snapshots = false
+# include_rebuild = false
+# rebuild_min_interval_secs = 86400
+# [worktree.auto_gc.max_age_by_kind]
+# session = 604800
+# manual = "never"
+
+# [worktree_pool]
+# enabled = false
+# pool_size = 2
+# file_count_threshold = 1000
+# parallelism = 2
+
+# -----------------------------------------------------------------------------
+# Usage pricing lives in ~/.grok/usage/pricing.toml (not always config.toml).
+# Full docs: docs/usage-pricing.md · examples/config.usage-pricing.toml
+#            examples/prices.custom.toml
+# WebDAV multi-device activity: ~/.grok/usage/sync.toml
+#   docs/webdav-sync.md · examples/usage-sync.toml
+# -----------------------------------------------------------------------------
+# # ~/.grok/usage/pricing.toml
+# mode = "all"                 # off | all | official_only
+# live_display = false         # prompt: model · $cost · mode
+# auto_sync_catalog = true     # models.dev on /usage sync
+
+# -----------------------------------------------------------------------------
+# [doom_loop_recovery]
+# -----------------------------------------------------------------------------
+# [doom_loop_recovery]
+# enabled = true
+# max_threshold = 8
+# max_retries = 2
+
+# -----------------------------------------------------------------------------
+# [paths] / [feedback] / [compat] / [folder_trust]
+# -----------------------------------------------------------------------------
+# [paths]
+# # overrides for data dirs
+
+# [feedback]
+# # submission endpoints / flags
+
+# [compat]
+# # vendor × surface toggles
+
+# [folder_trust]
+# enabled = true
+
+# -----------------------------------------------------------------------------
+# [shell_environment_policy]  — known keys only (validated at spawn)
+# -----------------------------------------------------------------------------
+# [shell_environment_policy]
+# # inherit / extra env policy
+
+# -----------------------------------------------------------------------------
+# Themes (files, not config keys)
+# Place TOML under ~/.grok/themes/<name>.toml then:
+#   /theme <name>
+#   [ui] theme = "<name>"
+# Required key: base = "groknight" | "grokday" | "tokyonight" | …
+# Color keys: bg_base, bg_dark, bg_light, bg_highlight, bg_hover, bg_terminal,
+#   text_primary, text_secondary, gray_dim, gray, gray_bright,
+#   accent_user, accent_assistant, accent_thinking, accent_tool, accent_system,
+#   accent_error, accent_success, accent_running, accent_skill,
+#   command, path, running, warning, fuzzy_accent
+# Packaged examples (no brand labels): Lonetrail, Lonetrail-light
+# -----------------------------------------------------------------------------

@@ -1,0 +1,8 @@
+built_at=2026-08-08T15:32:46+08:00
+brand=rev
+git_head=b456fbc9b5b0f400b7af8d368818cfbb98bc9e58
+git_short=b456fbc
+version=grok 1.0.0-rev (b456fbc) [stable]
+channel=stable
+npm_version=1.0.0
+notes=trial pack; themes auto-install on postinstall

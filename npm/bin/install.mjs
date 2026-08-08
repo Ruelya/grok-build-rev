@@ -1,0 +1,451 @@
+#!/usr/bin/env node
+/**
+ * npm postinstall / `npx grok-build-rev install`
+ *
+ * Installs the fork binary as the **primary** Grok client:
+ *   ~/.grok/bin/grok[.exe]
+ *
+ * Multi-platform: picks artifacts/bin/<platform>-<arch>/ or downloads from
+ * GROK_FORK_RELEASE_BASE when bundled binary is absent.
+ *
+ * Usage:
+ *   node bin/install.mjs              # install / replace official
+ *   node bin/install.mjs --dry-run
+ *   node bin/install.mjs restore
+ *   node bin/install.mjs status
+ */
+
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import {
+  PKG_ROOT,
+  binDir,
+  detectTarget,
+  findBundledBinary,
+  grokHome,
+  mainExePath,
+  remoteBinaryUrl,
+  supportedTargets,
+} from "./platform.mjs";
+
+const MARKER = "fork-install.json";
+const isWin = process.platform === "win32";
+
+function loadPkg() {
+  try {
+    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    d.getFullYear() +
+    p(d.getMonth() + 1) +
+    p(d.getDate()) +
+    "-" +
+    p(d.getHours()) +
+    p(d.getMinutes()) +
+    p(d.getSeconds())
+  );
+}
+
+function runVersion(exe) {
+  if (!existsSync(exe)) return null;
+  const r = spawnSync(exe, ["--version"], {
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+  });
+  const out = ((r.stdout || "") + (r.stderr || "")).trim();
+  return out.split(/\r?\n/)[0] || null;
+}
+
+function fileSize(p) {
+  try {
+    return statSync(p).size;
+  } catch {
+    return null;
+  }
+}
+
+async function download(url, dest) {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok) {
+    throw new Error(`download failed ${res.status} ${url}`);
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  const tmp = dest + ".download";
+  await pipeline(res.body, createWriteStream(tmp));
+  try {
+    if (existsSync(dest)) unlinkSync(dest);
+  } catch {
+    /* ignore */
+  }
+  renameSync(tmp, dest);
+  if (!isWin) {
+    try {
+      chmodSync(dest, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+
+
+function replaceBinary(from, to) {
+  const tmp = to + ".new";
+  copyFileSync(from, tmp);
+  if (!isWin) {
+    try {
+      chmodSync(tmp, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    if (existsSync(to)) {
+      try {
+        unlinkSync(to);
+      } catch {
+        copyFileSync(tmp, to);
+        try {
+          unlinkSync(tmp);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    }
+    renameSync(tmp, to);
+  } catch (e) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `cannot install over ${to}: ${e.message}\n  tip: quit all grok sessions, then re-run install`
+    );
+  }
+  if (!isWin) {
+    try {
+      chmodSync(to, 0o755);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function installThemes(home, { dryRun = false } = {}) {
+  const src = join(PKG_ROOT, "artifacts", "themes");
+  if (!existsSync(src)) return [];
+  const dest = join(home, "themes");
+  const files = readdirSync(src).filter((n) => n.endsWith(".toml"));
+  if (!files.length) return [];
+  if (!dryRun) {
+    mkdirSync(dest, { recursive: true });
+    for (const f of readdirSync(dest)) {
+      if (/^ruelya[-_]/i.test(f) && f.endsWith(".toml")) {
+        try {
+          unlinkSync(join(dest, f));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    for (const f of files) {
+      copyFileSync(join(src, f), join(dest, f));
+    }
+  }
+  return files.map((f) => f.replace(/\.toml$/, ""));
+}
+
+function disableAutoUpdate(home, { dryRun = false } = {}) {
+  const cfgPath = join(home, "config.toml");
+  if (!existsSync(cfgPath)) {
+    if (dryRun) return { ok: true, action: "create-cli" };
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      cfgPath,
+      `# Grok Build fork — disable stock auto_update so it cannot overwrite the fork.\n[cli]\nauto_update = false\n`,
+      "utf8"
+    );
+    return { ok: true, action: "create-cli" };
+  }
+  let raw = readFileSync(cfgPath, "utf8").replace(/\r\n/g, "\n");
+  if (/^\s*auto_update\s*=\s*false\s*$/m.test(raw)) {
+    return { ok: true, action: "already-false" };
+  }
+  if (/^\s*auto_update\s*=\s*true\s*$/m.test(raw)) {
+    const next = raw.replace(/^\s*auto_update\s*=\s*true\s*$/gm, "auto_update = false");
+    if (dryRun) return { ok: true, action: "flip-true" };
+    writeFileSync(cfgPath, next, "utf8");
+    return { ok: true, action: "flip-true" };
+  }
+  const cliIdx = raw.search(/^\[cli\]\s*$/m);
+  let next;
+  if (cliIdx >= 0) {
+    const lineEnd = raw.indexOf("\n", cliIdx);
+    const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
+    next = raw.slice(0, insertAt) + "auto_update = false\n" + raw.slice(insertAt);
+  } else {
+    next = raw.replace(/\s*$/, "\n\n") + "[cli]\nauto_update = false\n";
+  }
+  if (dryRun) return { ok: true, action: "insert" };
+  writeFileSync(cfgPath, next, "utf8");
+  return { ok: true, action: "insert" };
+}
+
+async function resolveSourceBinary() {
+  const bundled = findBundledBinary();
+  if (bundled) return { path: bundled, source: "bundled" };
+
+  const pkg = loadPkg();
+  const url = remoteBinaryUrl(pkg);
+  if (!url) {
+    const t = detectTarget();
+    const err = [
+      `No binary for ${t.key} in this package.`,
+      `  looked under: artifacts/bin/${t.key}/`,
+      `  supported keys: ${supportedTargets().join(", ")}`,
+      ``,
+      `Options:`,
+      `  1) Ship artifacts/bin/${t.key}/${t.exeName} in the npm package`,
+      `  2) Set GROK_FORK_RELEASE_BASE to a release URL prefix`,
+      `  3) Set GROK_FORK_BIN to a local built binary`,
+    ].join("\n");
+    throw new Error(err);
+  }
+
+  const cacheDir = join(PKG_ROOT, "artifacts", "cache", detectTarget().key);
+  mkdirSync(cacheDir, { recursive: true });
+  const dest = join(cacheDir, detectTarget().exeName);
+  if (!existsSync(dest)) {
+    console.log(`Downloading ${url} …`);
+    await download(url, dest);
+  }
+  return { path: dest, source: "download", url };
+}
+
+async function cmdInstall({ dryRun = false } = {}) {
+  const home = grokHome();
+  const target = detectTarget();
+  const exe = mainExePath(home);
+  mkdirSync(binDir(home), { recursive: true });
+
+  let src;
+  try {
+    src = await resolveSourceBinary();
+  } catch (e) {
+    console.error(`error: ${e.message}`);
+    process.exit(1);
+  }
+
+  const before = existsSync(exe) ? runVersion(exe) : null;
+  const forkVer = runVersion(src.path);
+  const ts = stamp();
+  const backupName = isWin
+    ? `grok.exe.bak-official-${ts}`
+    : `grok.bak-official-${ts}`;
+  const backupPath = join(binDir(home), backupName);
+
+  console.log(`Platform : ${target.key}`);
+  console.log(`Source   : ${src.path} (${src.source})`);
+  console.log(`  version: ${forkVer || "?"}`);
+  console.log(`Install →: ${exe}`);
+  console.log(`  was    : ${before || "(none)"}`);
+  if (existsSync(exe)) {
+    console.log(`Backup → : ${backupPath}`);
+  }
+
+  const themes = installThemes(home, { dryRun: true });
+  if (themes.length) console.log(`Themes   : ${themes.length} → ~/.grok/themes`);
+
+  if (dryRun) {
+    console.log("\n[dry-run] no files written.");
+    return;
+  }
+
+  if (existsSync(exe)) {
+    try {
+      copyFileSync(exe, backupPath);
+    } catch (e) {
+      console.error(`error: backup failed: ${e.message}`);
+      process.exit(1);
+    }
+  }
+
+  try {
+    replaceBinary(src.path, exe);
+  } catch (e) {
+    console.error(`error: ${e.message}`);
+    process.exit(1);
+  }
+
+  const installedThemes = installThemes(home, { dryRun: false });
+  const auto = disableAutoUpdate(home, { dryRun: false });
+  const after = runVersion(exe);
+
+  const marker = {
+    appliedAt: new Date().toISOString(),
+    brand: "rev",
+    mode: "primary-npm",
+    platform: target.key,
+    grokHome: home,
+    mainExe: exe,
+    backup: existsSync(backupPath) ? backupPath : null,
+    source: src.source,
+    sourcePath: src.path,
+    versionBefore: before,
+    versionAfter: after,
+    themes: installedThemes,
+    autoUpdate: auto,
+    package: PKG_ROOT,
+    packageVersion: loadPkg().version || null,
+  };
+  writeFileSync(join(home, MARKER), JSON.stringify(marker, null, 2) + "\n");
+
+  console.log("\nInstalled Grok Build fork as primary client.");
+  console.log(`  after  : ${after || "?"}`);
+  console.log(`  run    : ${exe}`);
+  console.log(`  or     : grok --version   (if ~/.grok/bin is on PATH)`);
+  if (installedThemes.length) {
+    console.log(
+      `  themes : ${installedThemes.length} → ${join(home, "themes")}  (use /theme <name>)`,
+    );
+  } else {
+    console.log("  themes : (none bundled — package missing artifacts/themes/*.toml)");
+  }
+  if (auto.ok) console.log(`  auto_update: ${auto.action}`);
+}
+
+function cmdRestore({ dryRun = false } = {}) {
+  const home = grokHome();
+  const exe = mainExePath(home);
+  const markerFile = join(home, MARKER);
+  let backup = null;
+  if (existsSync(markerFile)) {
+    try {
+      backup = JSON.parse(readFileSync(markerFile, "utf8")).backup;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!backup || !existsSync(backup)) {
+    const bin = binDir(home);
+    if (existsSync(bin)) {
+      const cands = readdirSync(bin)
+        .filter((n) => n.includes("bak-official"))
+        .map((n) => join(bin, n))
+        .sort();
+      backup = cands[cands.length - 1] || null;
+    }
+  }
+  if (!backup || !existsSync(backup)) {
+    console.error("error: no stock backup found. Reinstall official: https://x.ai/cli");
+    process.exit(1);
+  }
+  console.log(`Restore from: ${backup}`);
+  console.log(`  version   : ${runVersion(backup) || "?"}`);
+  if (dryRun) {
+    console.log("[dry-run] no changes.");
+    return;
+  }
+  replaceBinary(backup, exe);
+  try {
+    if (existsSync(markerFile)) unlinkSync(markerFile);
+  } catch {
+    /* ignore */
+  }
+  console.log(`Restored: ${runVersion(exe) || "?"}`);
+}
+
+function cmdStatus() {
+  const home = grokHome();
+  const t = detectTarget();
+  const exe = mainExePath(home);
+  const bundled = findBundledBinary();
+  console.log(`platform : ${t.key}`);
+  console.log(`GROK_HOME: ${home}`);
+  console.log(`main exe : ${exe}`);
+  console.log(`  present: ${existsSync(exe)}`);
+  console.log(`  version: ${runVersion(exe) || "n/a"}`);
+  console.log(`  size   : ${fileSize(exe) ?? "n/a"}`);
+  console.log(`bundled  : ${bundled || "(none for this platform)"}`);
+  if (bundled) console.log(`  version: ${runVersion(bundled) || "?"}`);
+  const url = remoteBinaryUrl(loadPkg());
+  console.log(`remote   : ${url || "(GROK_FORK_RELEASE_BASE not set)"}`);
+  const marker = join(home, MARKER);
+  if (existsSync(marker)) {
+    console.log(`marker   : ${marker}`);
+    console.log(readFileSync(marker, "utf8"));
+  } else {
+    console.log("marker   : (not installed via this package)");
+  }
+}
+
+function usage() {
+  console.log(`Grok Build fork — npm installer (replaces official client)
+
+  node bin/install.mjs              Install/replace ~/.grok/bin/grok
+  node bin/install.mjs --dry-run
+  node bin/install.mjs status
+  node bin/install.mjs restore
+
+Platform: auto (${detectTarget().key})
+Binary layout: artifacts/bin/<platform>-<arch>/grok[.exe]
+`);
+}
+
+const args = process.argv.slice(2);
+const dryRun = args.includes("--dry-run") || args.includes("-n");
+const cmd = args.find((a) => !a.startsWith("-")) || "install";
+
+const run = async () => {
+  switch (cmd) {
+    case "install":
+    case "apply":
+      await cmdInstall({ dryRun });
+      break;
+    case "restore":
+      cmdRestore({ dryRun });
+      break;
+    case "status":
+    case "info":
+      cmdStatus();
+      break;
+    case "help":
+    case "-h":
+    case "--help":
+      usage();
+      break;
+    default:
+      console.error(`unknown: ${cmd}`);
+      usage();
+      process.exit(1);
+  }
+};
+
+run().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -1,0 +1,65 @@
+# =============================================================================
+# Example: api_backend values for [model.*]
+# Full docs: docs/api-backends.md  |  中文: docs/api-backends.zh.md
+#
+# Values:
+#   chat_completions          — stock OpenAI Chat Completions (default if omitted)
+#   openai_chat_completions   — loose Chat Completions for gateways
+#   responses                 — official / xAI-oriented Responses
+#   openai_responses          — loose OpenAI-compatible Responses
+#   messages                  — stock Anthropic Messages
+#   anthropic_messages        — loose Anthropic-compatible Messages
+# =============================================================================
+
+# --- OpenAI-compatible Responses proxy (AxonHub, etc.) -----------------------
+[model.sol]
+name = "sol"
+model = "your-upstream-model"
+base_url = "https://your-gateway/v1"
+# api_key = "…"
+# env_key = "OPENAI_API_KEY"
+api_backend = "openai_responses"
+auto_prompt_cache_key = true
+context_window = 200000
+reasoning_effort = "high"
+
+# --- Loose Chat Completions gateway ------------------------------------------
+[model.cheap-chat]
+name = "Cheap chat"
+model = "gpt-ish"
+base_url = "https://llm.example/v1"
+env_key = "OPENAI_API_KEY"
+api_backend = "openai_chat_completions"
+context_window = 128000
+max_completion_tokens = 8192
+
+# --- Official-style Responses (first-party oriented) -------------------------
+# [model.official-responses]
+# model = "grok-4.5"
+# base_url = "https://api.x.ai/v1"
+# env_key = "XAI_API_KEY"
+# api_backend = "responses"
+
+# --- Anthropic-compatible Messages gateway -----------------------------------
+[model.claude-proxy]
+name = "Claude via proxy"
+model = "claude-sonnet-4-20250514"
+base_url = "https://anthropic-proxy.example"
+api_backend = "anthropic_messages"
+env_key = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+context_window = 200000
+
+[model.claude-proxy.extra_headers]
+anthropic-version = "2023-06-01"
+# x-api-key is often supplied via env_key / api_key instead of a literal here
+
+# --- Stock Chat Completions (default) ----------------------------------------
+# [model.openai-stock]
+# model = "gpt-4.1"
+# base_url = "https://api.openai.com/v1"
+# env_key = "OPENAI_API_KEY"
+# api_backend = "chat_completions"
+
+# Optional catalog default for picker:
+# [models]
+# default = "sol"

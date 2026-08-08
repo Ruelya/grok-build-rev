@@ -1,0 +1,253 @@
+# Build multi-platform grok binaries and publish npm package `grok-build-rev`.
+# Versioning: first release is 1.0.0; subsequent runs auto-bump patch from npm registry
+# (override with workflow_dispatch input).
+#
+# Required repo secret: NPM_TOKEN (npmjs.com automation / classic publish token)
+
+name: Release npm
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "npm/**"
+      - "crates/codegen/xai-grok-pager/**"
+      - "crates/codegen/xai-grok-pager-bin/**"
+      - "crates/codegen/xai-grok-shell/**"
+      - "crates/codegen/xai-grok-version/**"
+      - "crates/codegen/xai-grok-sampling-types/**"
+      - "crates/codegen/xai-grok-sampler/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "third_party/async-openai/**"
+      - ".github/workflows/release-npm.yml"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump relative to latest on npm (or start at 1.0.0)"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - keep
+        default: patch
+      force_version:
+        description: "Optional exact version (e.g. 1.0.0). Overrides bump when set."
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: release-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build (${{ matrix.npm_key }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            npm_key: win32-x64
+            exe: xai-grok-pager.exe
+            out: grok.exe
+          - os: ubuntu-latest
+            npm_key: linux-x64
+            exe: xai-grok-pager
+            out: grok
+          - os: ubuntu-24.04-arm
+            npm_key: linux-arm64
+            exe: xai-grok-pager
+            out: grok
+          - os: macos-13
+            npm_key: darwin-x64
+            exe: xai-grok-pager
+            out: grok
+          - os: macos-14
+            npm_key: darwin-arm64
+            exe: xai-grok-pager
+            out: grok
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pager-bin-${{ matrix.npm_key }}
+          cache-on-failure: true
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p xai-grok-pager-bin --release
+          mkdir -p "npm/artifacts/bin/${{ matrix.npm_key }}"
+          SRC="target/release/${{ matrix.exe }}"
+          DEST="npm/artifacts/bin/${{ matrix.npm_key }}/${{ matrix.out }}"
+          cp -f "$SRC" "$DEST"
+          chmod +x "$DEST" || true
+          ls -la "$DEST"
+          "$DEST" --version || true
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok-${{ matrix.npm_key }}
+          path: npm/artifacts/bin/${{ matrix.npm_key }}/${{ matrix.out }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/grok-bins
+          pattern: grok-*
+          merge-multiple: false
+
+      - name: Stage binaries into npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for dir in /tmp/grok-bins/grok-*; do
+            key="${dir##*/grok-}"
+            mkdir -p "npm/artifacts/bin/${key}"
+            if [[ "$key" == win32-* ]]; then
+              name=grok.exe
+            else
+              name=grok
+            fi
+            # artifact may be file or nested
+            if [[ -f "$dir/$name" ]]; then
+              cp -f "$dir/$name" "npm/artifacts/bin/${key}/$name"
+            elif [[ -f "$dir" ]]; then
+              cp -f "$dir" "npm/artifacts/bin/${key}/$name"
+            else
+              f=$(find "$dir" -type f | head -1)
+              cp -f "$f" "npm/artifacts/bin/${key}/$name"
+            fi
+            chmod +x "npm/artifacts/bin/${key}/$name" || true
+            echo "staged ${key}: $(wc -c < "npm/artifacts/bin/${key}/$name") bytes"
+          done
+          # BUILD_INFO
+          {
+            echo "package: grok-build-rev"
+            echo "git: ${GITHUB_SHA}"
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "platforms:"
+            ls -la npm/artifacts/bin/*/grok* || true
+          } > npm/artifacts/BUILD_INFO.txt
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        env:
+          INPUT_BUMP: ${{ github.event.inputs.bump || 'patch' }}
+          INPUT_FORCE: ${{ github.event.inputs.force_version || '' }}
+        run: |
+          set -euo pipefail
+          cd npm
+          if [[ -n "${INPUT_FORCE}" ]]; then
+            VER="${INPUT_FORCE}"
+            echo "Using forced version ${VER}"
+          else
+            LATEST=$(npm view grok-build-rev version 2>/dev/null || true)
+            if [[ -z "${LATEST}" ]]; then
+              VER="1.0.0"
+              echo "No published version — starting at ${VER}"
+            else
+              BUMP="${INPUT_BUMP:-patch}"
+              if [[ "$BUMP" == "keep" ]]; then
+                VER="$LATEST"
+                echo "Keeping published version ${VER} (re-publish may fail if immutable)"
+              else
+                # pure bash semver bump
+                IFS=. read -r MA MI PA <<<"${LATEST}"
+                PA=${PA%%[!0-9]*}
+                case "$BUMP" in
+                  major) MA=$((MA+1)); MI=0; PA=0 ;;
+                  minor) MI=$((MI+1)); PA=0 ;;
+                  patch|*) PA=$((PA+1)) ;;
+                esac
+                VER="${MA}.${MI}.${PA}"
+                echo "Bumped ${LATEST} --${BUMP}--> ${VER}"
+              fi
+            fi
+          fi
+          VER="$VER" node -e "
+            const fs=require('fs');
+            const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+            p.version=process.env.VER;
+            fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');
+            console.log('package.json version=', p.version);
+          "
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VER}"
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_TOKEN secret is not set. Add an npm automation token at repo Settings → Secrets → NPM_TOKEN"
+            exit 1
+          fi
+          npm publish --access public
+          echo "Published grok-build-rev@$(node -p "require('./package.json').version")"
+
+      - name: Create GitHub release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VER}"
+          cd npm
+          npm pack
+          TGZ="grok-build-rev-${VER}.tgz"
+          gh release create "$TAG" "$TGZ" \
+            --repo "${{ github.repository }}" \
+            --title "grok-build-rev ${VER}" \
+            --notes "npm: \`npm install -g grok-build-rev@${VER}\`
+
+Built from \`${GITHUB_SHA}\`." \
+            --latest \
+            || gh release upload "$TAG" "$TGZ" --repo "${{ github.repository }}" --clobber

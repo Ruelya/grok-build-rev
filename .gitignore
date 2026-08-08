@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# npm package native binaries (CI-staged; do not commit)
+npm/artifacts/bin/**/grok
+npm/artifacts/bin/**/grok.exe
+npm/artifacts/grok-fork.exe
+npm/*.tgz
