@@ -76,8 +76,12 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
+
+      # rust-toolchain.toml pin may not pull extra targets; add explicitly.
+      - name: Install cross target
+        if: matrix.rust_target != ''
+        shell: bash
+        run: rustup target add "${{ matrix.rust_target }}"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -90,6 +94,7 @@ jobs:
           set -euo pipefail
           TARGET="${{ matrix.rust_target }}"
           if [[ -n "$TARGET" ]]; then
+            rustup target list --installed | grep -qx "$TARGET" || rustup target add "$TARGET"
             cargo build -p xai-grok-pager-bin --release --target "$TARGET"
             SRC="target/${TARGET}/release/${{ matrix.exe }}"
           else
