@@ -571,9 +571,14 @@ pub struct CompletionTokensDetails {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionChunk {
+    /// Gateways sometimes omit; type-level default (empty) — no pre-parse fill.
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub object: String,
+    #[serde(default)]
     pub created: u64,
+    #[serde(default)]
     pub model: String,
     pub choices: Vec<ChatChunkChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -588,6 +593,7 @@ pub struct ChatCompletionChunk {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatChunkChoice {
+    #[serde(default)]
     pub index: u32,
     pub delta: ChatChunkDelta,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1014,30 +1020,115 @@ pub enum ApiBackend {
     /// Use the Chat Completions API (/v1/chat/completions)
     #[default]
     ChatCompletions,
-    /// Use the Responses API (/v1/responses)
+    /// OpenAI-compatible Chat Completions for non-xAI gateways (loose wire parse).
+    ///
+    /// Same request path as [`Self::ChatCompletions`]. Missing gateway fields
+    /// (`id` / `object` / `created` / `model` on chunks) are accepted via
+    /// type-level `#[serde(default)]` — no synthetic JSON fill before parse.
+    /// Explicit rename: `rename_all = "snake_case"` would emit `open_a_i_*`.
+    #[serde(
+        rename = "openai_chat_completions",
+        alias = "openai-chat-completions",
+        alias = "OpenAIChatCompletions"
+    )]
+    OpenAIChatCompletions,
+    /// Official / xAI-oriented Responses API (`/v1/responses`).
     Responses,
+    /// OpenAI-compatible Responses (`/v1/responses`) for non-xAI gateways
+    /// (AxonHub `openai_responses`, third-party proxies).
+    ///
+    /// Same request path as [`Self::Responses`]. Wire parse **accepts** missing
+    /// gateway fields via type-level `#[serde(default)]` on Ruelya’s async-openai
+    /// fork — no synthetic fill of `annotations` / `id` / `status` before parse
+    /// (Codex / Vercel AI style). Prefer this over `responses` for proxies.
+    /// Explicit rename: `rename_all = "snake_case"` would emit `open_a_i_*`.
+    #[serde(
+        rename = "openai_responses",
+        alias = "openai-responses",
+        alias = "OpenAIResponses"
+    )]
+    OpenAIResponses,
     /// Use the Anthropic Messages API (/v1/messages)
     Messages,
+    /// Anthropic-compatible Messages (`/v1/messages`) for non-Anthropic gateways
+    /// (loose wire parse).
+    ///
+    /// Same request path as [`Self::Messages`]. Missing gateway fields
+    /// (thinking `signature`, response `id`/`model`, usage defaults) are
+    /// accepted via type-level `#[serde(default)]` — no pre-parse JSON fill.
+    #[serde(
+        rename = "anthropic_messages",
+        alias = "anthropic-messages",
+        alias = "AnthropicMessages"
+    )]
+    AnthropicMessages,
 }
 
 impl ApiBackend {
+    /// Whether this backend posts to the Chat Completions surface
+    /// (`/v1/chat/completions`).
+    pub fn is_chat_completions_api(&self) -> bool {
+        matches!(self, Self::ChatCompletions | Self::OpenAIChatCompletions)
+    }
+
+    /// Whether this backend posts to the Responses API surface (`/v1/responses`).
+    pub fn is_responses_api(&self) -> bool {
+        matches!(self, Self::Responses | Self::OpenAIResponses)
+    }
+
+    /// Whether this backend posts to the Messages API surface (`/v1/messages`).
+    pub fn is_messages_api(&self) -> bool {
+        matches!(self, Self::Messages | Self::AnthropicMessages)
+    }
+
+    /// Whether this backend is the OpenAI-compatible loose Chat Completions surface.
+    ///
+    /// Parse itself is type-level loose for both Chat Completions backends
+    /// (shared chunk defaults). This flag is kept for logging / routing clarity.
+    pub fn lenient_chat_completions_parse(&self) -> bool {
+        matches!(self, Self::OpenAIChatCompletions)
+    }
+
+    /// Whether this backend is the OpenAI-compatible loose Responses surface.
+    ///
+    /// Parse itself is type-level loose for both Responses backends (shared
+    /// async-openai defaults). This flag is kept for logging / routing clarity.
+    pub fn lenient_responses_parse(&self) -> bool {
+        matches!(self, Self::OpenAIResponses)
+    }
+
+    /// Whether this backend is the Anthropic-compatible loose Messages surface.
+    ///
+    /// Parse itself is type-level loose for both Messages backends (shared
+    /// type defaults). This flag is kept for logging / routing clarity.
+    pub fn lenient_messages_parse(&self) -> bool {
+        matches!(self, Self::AnthropicMessages)
+    }
+
     /// Whether the backend enforces a response JSON schema natively alongside
     /// tool calls. The Messages API does not (a schema there blocks tool use),
     /// so structured output there goes through the StructuredOutput tool.
     pub fn supports_native_schema(&self) -> bool {
-        matches!(self, Self::ChatCompletions | Self::Responses)
+        matches!(
+            self,
+            Self::ChatCompletions
+                | Self::OpenAIChatCompletions
+                | Self::Responses
+                | Self::OpenAIResponses
+        )
     }
 
-    /// Whether replayed reasoning must be stripped. Only the Messages API rejects thinking blocks sent without a top-level `thinking` config.
+    /// Whether replayed reasoning must be stripped. Messages APIs reject
+    /// thinking blocks sent without a top-level `thinking` config.
     pub fn requires_reasoning_strip(&self) -> bool {
-        matches!(self, Self::Messages)
+        matches!(self, Self::Messages | Self::AnthropicMessages)
     }
 
-    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert.
+    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire.
     ///
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     pub fn forwards_prompt_cache_key(&self) -> bool {
-        matches!(self, Self::Responses)
+        matches!(self, Self::Responses | Self::OpenAIResponses)
     }
 }
 
@@ -1071,6 +1162,13 @@ pub struct SamplingConfig {
     /// API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// When true and [`ApiBackend::forwards_prompt_cache_key`] is true, main
+    /// turns auto-attach a stable session-derived [`ConversationRequest::prompt_cache_key`].
+    /// Per-model opt-in (default off).
+    ///
+    /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_prompt_cache_key: bool,
 }
 
 // ============ Responses API wrapper ============
@@ -1531,5 +1629,91 @@ mod tests {
         let inner: &dyn TraceContext = &*cloned_trace;
         let downcast = inner.as_any().downcast_ref::<TestTrace>().unwrap();
         assert_eq!(downcast.0, "trace-data");
+    }
+
+    #[test]
+    fn api_backend_serde_wire_names_and_aliases() {
+        let cases: &[(ApiBackend, &str, &[&str])] = &[
+            (ApiBackend::ChatCompletions, "chat_completions", &[]),
+            (
+                ApiBackend::OpenAIChatCompletions,
+                "openai_chat_completions",
+                &["openai-chat-completions", "OpenAIChatCompletions"],
+            ),
+            (ApiBackend::Responses, "responses", &[]),
+            (
+                ApiBackend::OpenAIResponses,
+                "openai_responses",
+                &["openai-responses", "OpenAIResponses"],
+            ),
+            (ApiBackend::Messages, "messages", &[]),
+            (
+                ApiBackend::AnthropicMessages,
+                "anthropic_messages",
+                &["anthropic-messages", "AnthropicMessages"],
+            ),
+        ];
+        for (variant, snake, aliases) in cases {
+            let wire = serde_json::to_string(variant).expect("serialize");
+            assert_eq!(wire, format!("\"{snake}\""));
+            let back: ApiBackend = serde_json::from_str(&wire).expect("deserialize snake");
+            assert_eq!(&back, variant);
+            for alias in *aliases {
+                let back: ApiBackend =
+                    serde_json::from_str(&format!("\"{alias}\"")).expect("alias");
+                assert_eq!(&back, variant, "alias {alias}");
+            }
+        }
+    }
+
+    #[test]
+    fn api_backend_lenient_and_surface_flags() {
+        assert!(ApiBackend::ChatCompletions.is_chat_completions_api());
+        assert!(ApiBackend::OpenAIChatCompletions.is_chat_completions_api());
+        assert!(!ApiBackend::Responses.is_chat_completions_api());
+        assert!(!ApiBackend::Messages.is_chat_completions_api());
+
+        assert!(ApiBackend::Messages.is_messages_api());
+        assert!(ApiBackend::AnthropicMessages.is_messages_api());
+        assert!(!ApiBackend::ChatCompletions.is_messages_api());
+        assert!(!ApiBackend::Responses.is_messages_api());
+
+        assert!(ApiBackend::OpenAIChatCompletions.lenient_chat_completions_parse());
+        assert!(!ApiBackend::ChatCompletions.lenient_chat_completions_parse());
+        assert!(ApiBackend::OpenAIResponses.lenient_responses_parse());
+        assert!(!ApiBackend::Responses.lenient_responses_parse());
+        assert!(ApiBackend::AnthropicMessages.lenient_messages_parse());
+        assert!(!ApiBackend::Messages.lenient_messages_parse());
+
+        assert!(ApiBackend::OpenAIChatCompletions.supports_native_schema());
+        assert!(ApiBackend::ChatCompletions.supports_native_schema());
+        assert!(!ApiBackend::Messages.supports_native_schema());
+        assert!(!ApiBackend::AnthropicMessages.supports_native_schema());
+
+        assert!(ApiBackend::Messages.requires_reasoning_strip());
+        assert!(ApiBackend::AnthropicMessages.requires_reasoning_strip());
+        assert!(!ApiBackend::ChatCompletions.requires_reasoning_strip());
+        assert!(!ApiBackend::OpenAIChatCompletions.requires_reasoning_strip());
+
+        assert!(ApiBackend::Responses.forwards_prompt_cache_key());
+        assert!(ApiBackend::OpenAIResponses.forwards_prompt_cache_key());
+        assert!(!ApiBackend::OpenAIChatCompletions.forwards_prompt_cache_key());
+        assert!(!ApiBackend::AnthropicMessages.forwards_prompt_cache_key());
+    }
+
+    #[test]
+    fn chat_completion_chunk_parses_without_id_object_created_model() {
+        // Type-level defaults — no synthetic fill of gateway fields before parse.
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"hi"}}]}"#,
+        )
+        .expect("missing id/object/created/model must not fail");
+        assert_eq!(chunk.id, "");
+        assert_eq!(chunk.object, "");
+        assert_eq!(chunk.created, 0);
+        assert_eq!(chunk.model, "");
+        assert_eq!(chunk.choices.len(), 1);
+        assert_eq!(chunk.choices[0].index, 0);
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hi"));
     }
 }

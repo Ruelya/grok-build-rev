@@ -440,7 +440,7 @@ pub(crate) async fn generate_session_compact(
         crate::util::config::CompactionToolChoice::None => ConversationToolChoice::None,
     };
     let output = match sampling_config.api_backend {
-        ApiBackend::ChatCompletions => {
+        ApiBackend::ChatCompletions | ApiBackend::OpenAIChatCompletions => {
             let chat_messages: Vec<ChatRequestMessage> =
                 conversation_to_chat_messages(chat_history);
             let mut message =
@@ -549,7 +549,7 @@ pub(crate) async fn generate_session_compact(
                 itl_max_ms: timing.itl_max_ms(),
             }
         }
-        ApiBackend::Responses => {
+        ApiBackend::Responses | ApiBackend::OpenAIResponses => {
             let request = ConversationRequest {
                 items: chat_history,
                 tool_choice: (!tools.is_empty()).then_some(conversation_tool_choice),
@@ -679,7 +679,7 @@ pub(crate) async fn generate_session_compact(
                 itl_max_ms: timing.itl_max_ms(),
             }
         }
-        ApiBackend::Messages => {
+        ApiBackend::Messages | ApiBackend::AnthropicMessages => {
             let request = ConversationRequest {
                 items: chat_history,
                 tools,
@@ -1729,6 +1729,7 @@ mod reasoning_compaction_regression_tests {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             client_identifier: None,
             reasoning_effort: None,

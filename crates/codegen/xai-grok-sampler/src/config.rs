@@ -74,6 +74,10 @@ pub struct SamplerConfig {
     pub force_http1: bool,
     pub max_retries: Option<u32>,
     pub stream_tool_calls: bool,
+    /// When true and `api_backend` is Responses, main turns auto-attach a
+    /// session-stable `prompt_cache_key` (propagated into chat-state).
+    #[serde(default)]
+    pub auto_prompt_cache_key: bool,
     pub idle_timeout_secs: Option<u64>,
 
     // Reasoning effort
@@ -153,6 +157,7 @@ impl Default for SamplerConfig {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
             origin_client: None,

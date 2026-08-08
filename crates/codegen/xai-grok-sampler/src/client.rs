@@ -99,7 +99,13 @@ impl GrokRequestHeaders<'_> {
 /// `ResponseUsage` unchanged so billing telemetry stays correct. When
 /// the API doesn't emit `context_details` (older deployments) `total_tokens`
 /// passes through unchanged.
-fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
+fn deserialize_response_event(
+    data: &str,
+    lenient: bool,
+) -> Result<rs::ResponseStreamEvent> {
+    // Type-level loose accept (Ruelya async-openai): missing annotations/id/status
+    // deserialize as defaults — do not mutate JSON to invent synthetic fields.
+    // `lenient` is retained for log context (OpenAIResponses vs Responses).
     let mut event = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
         Ok(event) => event,
         Err(first_err) => {
@@ -123,6 +129,7 @@ fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
             tracing::error!(
                 error = %first_err,
                 raw_data = %data,
+                lenient,
                 "Failed to deserialize ResponseStreamEvent from stream"
             );
             return Err(SamplingError::Serialization(first_err));
@@ -1083,13 +1090,18 @@ impl SamplingClient {
         // Turn raw bytes into SSE events
         let event_stream = byte_stream.eventsource();
 
+        // Type-level loose accept on ChatCompletionChunk (defaults for id/object/
+        // created/model). `lenient` is retained for log context (OpenAIChatCompletions
+        // vs ChatCompletions) — no JSON fill before parse.
+        let lenient_parse = self.api_backend().lenient_chat_completions_parse();
+
         // Map SSE events into ChatCompletionChunk.
         // Uses `scan` so that `[DONE]` and transport errors both terminate the
         // stream (`None`). The first transport error is emitted to the consumer,
         // then subsequent polls return `None` -- preventing an infinite busy-loop
         // when the HTTP/2 connection drops and h2 keeps producing errors.
         let chunks = event_stream
-            .scan(false, |had_transport_error, event_res| {
+            .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
                     return std::future::ready(None);
                 }
@@ -1104,6 +1116,7 @@ impl SamplingClient {
                             target: crate::sampling_log::TARGET,
                             event = "sse_chunk",
                             backend = "chat_completions",
+                            lenient = lenient_parse,
                             data = %data,
                         );
 
@@ -1115,6 +1128,7 @@ impl SamplingClient {
                                     tracing::error!(
                                         error = %e,
                                         raw_data = %data,
+                                        lenient = lenient_parse,
                                         "Failed to deserialize ChatCompletionChunk from stream"
                                     );
                                     SamplingError::Serialization(e)
@@ -1263,6 +1277,7 @@ impl SamplingClient {
             });
         }
 
+        // Type-level loose deserialize (no JSON fill-before-parse).
         let response_obj = serde_json::from_slice::<rs::Response>(&bytes).map_err(|e| {
             let raw_body = String::from_utf8_lossy(&bytes);
             tracing::error!(
@@ -1456,6 +1471,7 @@ impl SamplingClient {
         let event_stream = byte_stream.eventsource();
 
         let doom_loop_for_stream = doom_loop.clone();
+        let lenient_parse = self.api_backend().lenient_responses_parse();
 
         // The scan item is an `Option`: `Some(None)` skips an absorbed
         // doom-loop event without terminating the stream (`filter_map`
@@ -1476,6 +1492,7 @@ impl SamplingClient {
                             target: crate::sampling_log::TARGET,
                             event = "sse_chunk",
                             backend = "responses",
+                            lenient = lenient_parse,
                             data = %data,
                         );
 
@@ -1494,7 +1511,7 @@ impl SamplingClient {
                         } else if let Some(stream_error) = try_parse_stream_error(data) {
                             Some(Some(Err(stream_error)))
                         } else {
-                            Some(Some(deserialize_response_event(data)))
+                            Some(Some(deserialize_response_event(data, lenient_parse)))
                         }
                     }
                     Err(e) => {
@@ -1769,11 +1786,16 @@ impl SamplingClient {
         // Turn raw bytes into SSE events
         let event_stream = byte_stream.eventsource();
 
+        // Type-level loose accept on MessageStreamEvent (defaults for signature /
+        // id / model / usage). `lenient` is retained for log context
+        // (AnthropicMessages vs Messages) — no JSON fill before parse.
+        let lenient_parse = self.api_backend().lenient_messages_parse();
+
         // Map SSE events into MessageStreamEvent.
         // Uses `scan` so transport errors terminate the stream after the first
         // error (same pattern as `chat_completion_stream`).
         let events = event_stream
-            .scan(false, |had_transport_error, event_res| {
+            .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
                     return std::future::ready(None);
                 }
@@ -1788,6 +1810,7 @@ impl SamplingClient {
                             target: crate::sampling_log::TARGET,
                             event = "sse_chunk",
                             backend = "messages",
+                            lenient = lenient_parse,
                             data = %data,
                         );
 
@@ -1800,6 +1823,7 @@ impl SamplingClient {
                                         tracing::error!(
                                             error = %e,
                                             raw_data = %data,
+                                            lenient = lenient_parse,
                                             "Failed to deserialize MessageStreamEvent from stream"
                                         );
                                         SamplingError::Serialization(e)
@@ -2037,19 +2061,19 @@ impl SamplingClient {
         let request_id = crate::types::RequestId::random();
         let idle_timeout = std::time::Duration::from_secs(300);
         let result = match self.api_backend() {
-            ApiBackend::ChatCompletions => {
+            ApiBackend::ChatCompletions | ApiBackend::OpenAIChatCompletions => {
                 let (raw, meta) = self.conversation_stream(request).await?;
                 let events =
                     crate::stream::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
-            ApiBackend::Responses => {
+            ApiBackend::Responses | ApiBackend::OpenAIResponses => {
                 let (raw, meta, doom_loop) = self.conversation_stream_responses(request).await?;
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
                 crate::stream::collect_response(events).await
             }
-            ApiBackend::Messages => {
+            ApiBackend::Messages | ApiBackend::AnthropicMessages => {
                 let (raw, meta) = self.conversation_stream_messages(request).await?;
                 let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
@@ -2138,6 +2162,7 @@ mod tests {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
             origin_client: None,
@@ -2848,7 +2873,7 @@ mod tests {
                 }
             }
         }"#;
-        let event = deserialize_response_event(sse).expect("parse");
+        let event = deserialize_response_event(sse, false).expect("parse");
         let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
             panic!("expected ResponseCompleted");
         };
@@ -2886,7 +2911,7 @@ mod tests {
             )
         };
 
-        let event = deserialize_response_event(&make(78)).expect("parse");
+        let event = deserialize_response_event(&make(78), false).expect("parse");
         let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
             panic!("expected ResponseCompleted");
         };
@@ -2900,7 +2925,7 @@ mod tests {
         );
 
         // The REST mapper backfills 0 for unbilled requests: no stash.
-        let event = deserialize_response_event(&make(0)).expect("parse");
+        let event = deserialize_response_event(&make(0), false).expect("parse");
         let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
             panic!("expected ResponseCompleted");
         };
@@ -2930,7 +2955,7 @@ mod tests {
                 }
             }
         }"#;
-        let event = deserialize_response_event(sse).expect("parse");
+        let event = deserialize_response_event(sse, false).expect("parse");
         let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
             panic!("expected ResponseCompleted");
         };
@@ -2967,7 +2992,7 @@ mod tests {
                 }
             }
         }"#;
-        let event = deserialize_response_event(sse).expect("parse");
+        let event = deserialize_response_event(sse, false).expect("parse");
         let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
             panic!("expected ResponseCompleted");
         };
@@ -2988,7 +3013,7 @@ mod tests {
             "delta": "hello",
             "logprobs": []
         }"#;
-        let event = deserialize_response_event(sse).expect("non-terminal event parses");
+        let event = deserialize_response_event(sse, false).expect("non-terminal event parses");
         assert!(matches!(
             event,
             rs::ResponseStreamEvent::ResponseOutputTextDelta(_)

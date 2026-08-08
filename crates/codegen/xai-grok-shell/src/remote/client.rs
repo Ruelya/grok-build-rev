@@ -862,8 +862,17 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| get_string(obj, "api_backend"))
         .and_then(|s| match s.as_str() {
             "responses" => Some(crate::sampling::ApiBackend::Responses),
+            "openai_responses" | "openai-responses" => {
+                Some(crate::sampling::ApiBackend::OpenAIResponses)
+            }
             "chat_completions" => Some(crate::sampling::ApiBackend::ChatCompletions),
+            "openai_chat_completions" | "openai-chat-completions" => {
+                Some(crate::sampling::ApiBackend::OpenAIChatCompletions)
+            }
             "messages" => Some(crate::sampling::ApiBackend::Messages),
+            "anthropic_messages" | "anthropic-messages" => {
+                Some(crate::sampling::ApiBackend::AnthropicMessages)
+            }
             _ => None,
         })
         .unwrap_or_default();
@@ -965,6 +974,7 @@ pub(crate) fn parse_remote_model_value(
             .get("streamToolCalls")
             .or_else(|| obj.get("stream_tool_calls"))
             .and_then(|v| v.as_bool()),
+        auto_prompt_cache_key: false,
         laziness_detector: get_object(obj, "lazinessDetector")
             .or_else(|| get_object(obj, "laziness_detector"))
             .or_else(|| meta.and_then(|m| get_object(m, "lazinessDetector")))

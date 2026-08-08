@@ -131,6 +131,8 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
+        /// Gateways sometimes omit; type-level default — no pre-parse fill.
+        #[serde(default)]
         signature: String,
     },
     /// Encrypted reasoning the model chose to redact. Carries only an opaque
@@ -215,13 +217,17 @@ pub struct Metadata {
 /// Non-streaming response from POST /v1/messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
+    /// Gateways sometimes omit; type-level default (empty) — no pre-parse fill.
+    #[serde(default)]
     pub id: String,
     #[serde(rename = "type")]
     pub r#type: String, // "message"
     pub role: String, // "assistant"
     pub content: Vec<ContentBlock>,
+    #[serde(default)]
     pub model: String,
     pub stop_reason: Option<StopReason>,
+    #[serde(default)]
     pub usage: MessagesUsage,
 }
 
@@ -246,7 +252,9 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessagesUsage {
+    #[serde(default)]
     pub input_tokens: u32,
+    #[serde(default)]
     pub output_tokens: u32,
     #[serde(default)]
     pub cache_creation_input_tokens: u32,
@@ -318,6 +326,7 @@ pub struct StopDetails {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageDeltaUsage {
+    #[serde(default)]
     pub output_tokens: u32,
     #[serde(default)]
     pub input_tokens: Option<u32>,
@@ -499,5 +508,49 @@ mod tests {
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("effort").is_none(), "effort omitted when None");
         assert_eq!(json["format"]["type"], "json_schema");
+    }
+
+    /// Gateways sometimes omit thinking `signature`; type-level default accepts
+    /// it without pre-parse JSON mutation.
+    #[test]
+    fn thinking_block_parses_without_signature() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"hmm"}}"#,
+        )
+        .expect("thinking without signature must deserialize");
+        match event {
+            MessageStreamEvent::ContentBlockStart { content_block, .. } => match content_block {
+                ContentBlock::Thinking { thinking, signature } => {
+                    assert_eq!(thinking, "hmm");
+                    assert_eq!(signature, "");
+                }
+                other => panic!("expected Thinking, got {other:?}"),
+            },
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+    }
+
+    /// Loose Messages response: missing id/model/usage token fields default.
+    #[test]
+    fn messages_response_parses_with_missing_id_model_usage_fields() {
+        let msg: MessagesResponse = serde_json::from_str(
+            r#"{"type":"message","role":"assistant","content":[]}"#,
+        )
+        .expect("missing id/model/usage must not fail");
+        assert_eq!(msg.id, "");
+        assert_eq!(msg.model, "");
+        assert_eq!(msg.usage.input_tokens, 0);
+        assert_eq!(msg.usage.output_tokens, 0);
+
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#,
+        )
+        .expect("message_delta with empty usage must parse");
+        match event {
+            MessageStreamEvent::MessageDelta { usage, .. } => {
+                assert_eq!(usage.output_tokens, 0);
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
     }
 }

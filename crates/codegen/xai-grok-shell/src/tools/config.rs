@@ -181,6 +181,21 @@ pub struct ShellToolsetConfig {
     /// Hashline scheme parameters. Only used when `file_toolset = "hashline"`.
     #[serde(default)]
     pub hashline: HashlineSchemeConfig,
+    /// Named built-in toolset style (`grok-build`, `codex`, `explore`, …).
+    ///
+    /// Resolved via [`xai_grok_agent::toolset_for_preset`]. Applied to:
+    /// - the **main** session agent definition, and
+    /// - **subagents** (after harness toolset resolution).
+    ///
+    /// When unset / empty / unknown, each agent keeps its type's default
+    /// tool list (no-op). Config example:
+    ///
+    /// ```toml
+    /// [toolset]
+    /// style = "explore"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 impl Default for ShellToolsetConfig {
@@ -228,6 +243,7 @@ impl ShellToolsetConfig {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
+            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             client_identifier: None,
             deployment_id: None,
@@ -256,6 +272,7 @@ impl ShellToolsetConfig {
             ask_user_question: AskUserQuestionToolConfig::default(),
             file_toolset: FileToolset::default(),
             hashline: HashlineSchemeConfig::default(),
+            style: None,
         });
         if let Some(sc) = sampling_config {
             toolset.web_search = web_search_sampling_config(sc);

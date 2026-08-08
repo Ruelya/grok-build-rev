@@ -386,6 +386,14 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
+    /// Optional `[models] recap` override for session recap model selection.
+    pub fn recap_model_override(&self) -> Option<String> {
+        let cfg = self.inner.cfg.read();
+        cfg.recap_model
+            .clone()
+            .or_else(|| cfg.models.recap.clone())
+    }
+
     /// Does the current credential grant access to OAuth-only models?
     fn is_session_auth(&self) -> bool {
         self.inner

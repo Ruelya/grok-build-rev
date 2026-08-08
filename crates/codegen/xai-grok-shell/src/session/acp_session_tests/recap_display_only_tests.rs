@@ -820,10 +820,19 @@ async fn recap_request_rides_parent_prompt_cache() {
             );
 
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
+            let session_id = actor.session_info.id.to_string();
+            let expected_recap_key =
+                xai_grok_sampling_types::derive_recap_prompt_cache_key(&session_id);
+            let expected_main_key =
+                xai_grok_sampling_types::derive_main_prompt_cache_key(&session_id);
             assert_eq!(
                 body["prompt_cache_key"].as_str(),
-                Some(actor.session_info.id.to_string().as_str()),
-                "prompt_cache_key must be the parent session id for sticky routing"
+                Some(expected_recap_key.as_str()),
+                "recap prompt_cache_key is session-derived but must differ from main"
+            );
+            assert_ne!(
+                expected_recap_key, expected_main_key,
+                "recap key must not equal main-turn key"
             );
             let main_turn_specs =
                 actor.turn_base_tool_specs(&actor.prepare_tool_definitions().await);

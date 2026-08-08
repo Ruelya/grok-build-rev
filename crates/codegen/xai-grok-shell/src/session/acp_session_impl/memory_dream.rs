@@ -790,7 +790,8 @@ impl SessionActor {
         let idle_timeout = std::time::Duration::from_secs(15);
 
         let result = match sampling_client.api_backend() {
-            crate::sampling::ApiBackend::ChatCompletions => {
+            crate::sampling::ApiBackend::ChatCompletions
+            | crate::sampling::ApiBackend::OpenAIChatCompletions => {
                 let (raw, meta) = sampling_client
                     .conversation_stream(request)
                     .await
@@ -799,7 +800,8 @@ impl SessionActor {
                     xai_grok_sampler::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 xai_grok_sampler::collect_response(events).await
             }
-            crate::sampling::ApiBackend::Responses => {
+            crate::sampling::ApiBackend::Responses
+            | crate::sampling::ApiBackend::OpenAIResponses => {
                 let (raw, meta, doom_loop) = sampling_client
                     .conversation_stream_responses(request)
                     .await
@@ -813,7 +815,8 @@ impl SessionActor {
                 );
                 xai_grok_sampler::collect_response(events).await
             }
-            crate::sampling::ApiBackend::Messages => {
+            crate::sampling::ApiBackend::Messages
+            | crate::sampling::ApiBackend::AnthropicMessages => {
                 let (raw, meta) = sampling_client
                     .conversation_stream_messages(request)
                     .await

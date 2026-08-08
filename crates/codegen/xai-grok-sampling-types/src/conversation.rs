@@ -2378,24 +2378,27 @@ mod tests {
 
         for backend in [
             crate::ApiBackend::ChatCompletions,
+            crate::ApiBackend::OpenAIChatCompletions,
             crate::ApiBackend::Responses,
+            crate::ApiBackend::OpenAIResponses,
             crate::ApiBackend::Messages,
+            crate::ApiBackend::AnthropicMessages,
         ] {
             let on_wire = match backend {
-                crate::ApiBackend::Responses => {
+                crate::ApiBackend::Responses | crate::ApiBackend::OpenAIResponses => {
                     rs::CreateResponse::from(&request())
                         .prompt_cache_key
                         .as_deref()
                         == Some("cache-key-1")
                 }
-                crate::ApiBackend::ChatCompletions => {
+                crate::ApiBackend::ChatCompletions | crate::ApiBackend::OpenAIChatCompletions => {
                     let mapped = ChatCompletionRequest::from(request());
                     serde_json::to_value(&mapped)
                         .expect("chat request serializes")
                         .get("prompt_cache_key")
                         .is_some()
                 }
-                crate::ApiBackend::Messages => {
+                crate::ApiBackend::Messages | crate::ApiBackend::AnthropicMessages => {
                     let mapped = super::messages::build_messages_request(&request());
                     serde_json::to_value(&mapped)
                         .expect("messages request serializes")

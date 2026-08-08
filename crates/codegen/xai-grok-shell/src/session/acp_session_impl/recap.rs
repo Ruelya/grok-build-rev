@@ -89,6 +89,8 @@ impl SessionActor {
         };
 
         // Built once; each attempt clones it and stamps a fresh req_id, and retries are rare so the success path pays one clone.
+        // Share the main-turn key so /btw can ride the parent prefix cache.
+        // Upstream AuxCall: pck is stamped as parent session id in parent_cached_request.
         let base_request = self.parent_cached_request(AuxCall {
             items,
             tools: tool_specs,
@@ -537,13 +539,15 @@ impl SessionActor {
         let idle_timeout = std::time::Duration::from_secs(5);
 
         let result = match sampling_client.api_backend() {
-            crate::sampling::ApiBackend::ChatCompletions => {
+            crate::sampling::ApiBackend::ChatCompletions
+            | crate::sampling::ApiBackend::OpenAIChatCompletions => {
                 let (raw, meta) = sampling_client.conversation_stream(request).await.ok()?;
                 let events =
                     xai_grok_sampler::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 xai_grok_sampler::collect_response(events).await
             }
-            crate::sampling::ApiBackend::Responses => {
+            crate::sampling::ApiBackend::Responses
+            | crate::sampling::ApiBackend::OpenAIResponses => {
                 let (raw, meta, doom_loop) = sampling_client
                     .conversation_stream_responses(request)
                     .await
@@ -557,7 +561,8 @@ impl SessionActor {
                 );
                 xai_grok_sampler::collect_response(events).await
             }
-            crate::sampling::ApiBackend::Messages => {
+            crate::sampling::ApiBackend::Messages
+            | crate::sampling::ApiBackend::AnthropicMessages => {
                 let (raw, meta) = sampling_client
                     .conversation_stream_messages(request)
                     .await

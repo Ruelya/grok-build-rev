@@ -481,7 +481,7 @@ async fn run_one_attempt(
     output_observed: Arc<AtomicBool>,
 ) -> AttemptOutcome {
     match client.api_backend() {
-        ApiBackend::ChatCompletions => {
+        ApiBackend::ChatCompletions | ApiBackend::OpenAIChatCompletions => {
             let (raw, metadata) = match client.conversation_stream(request).await {
                 Ok(pair) => pair,
                 Err(e) => return AttemptOutcome::InitFailed { error: e },
@@ -499,7 +499,7 @@ async fn run_one_attempt(
             )
             .await
         }
-        ApiBackend::Responses => {
+        ApiBackend::Responses | ApiBackend::OpenAIResponses => {
             let (raw, metadata, doom_loop) =
                 match client.conversation_stream_responses(request).await {
                     Ok(parts) => parts,
@@ -530,7 +530,7 @@ async fn run_one_attempt(
             )
             .await
         }
-        ApiBackend::Messages => {
+        ApiBackend::Messages | ApiBackend::AnthropicMessages => {
             let (raw, metadata) = match client.conversation_stream_messages(request).await {
                 Ok(pair) => pair,
                 Err(e) => return AttemptOutcome::InitFailed { error: e },

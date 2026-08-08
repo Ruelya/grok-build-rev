@@ -10,7 +10,9 @@ pub mod conversation;
 pub mod doom_loop;
 pub mod error;
 pub mod messages;
+pub mod prompt_cache_key;
 pub mod provider_error;
+pub mod responses_lenient;
 pub mod serde_helpers;
 pub mod tool_overrides;
 pub mod types;
@@ -24,6 +26,13 @@ pub use self::error::{
     EmptyReason, EmptyResponseContext, ResponseModelMetadata, Result, SamplingError,
     SentCredential, is_context_length_error, is_retryable_api_status, status_user_message,
     user_facing_api_error_message,
+};
+pub use self::prompt_cache_key::{
+    derive_main_prompt_cache_key, derive_recap_prompt_cache_key, resolve_main_auto_prompt_cache_key,
+    resolve_recap_model_id,
+};
+pub use self::responses_lenient::{
+    deserialize_response_body_loose, deserialize_response_stream_event_loose,
 };
 pub use self::tool_overrides::{
     ClearableField, SearchDateBound, SearchDateBoundError, ToolOverrides, ToolOverridesUpdate,
