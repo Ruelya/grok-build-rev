@@ -4336,6 +4336,12 @@ impl MvpAgent {
                     "cli agent overrides applied"
                 );
             }
+            // Optional `[toolset] style = "codex"|"explore"|…` replaces the
+            // agent type's default tool list when the preset is known.
+            xai_grok_agent::config::apply_toolset_style_override(
+                &mut agent_definition,
+                cfg.toolset.style.as_deref(),
+            );
         }
         let pinned_model: Option<(acp::ModelId, ModelEntry)> = match &agent_definition
             .model

@@ -173,10 +173,16 @@ fn merge_subagents(
         }
     }
 
-    // 3. Filter by toggle (omitted = enabled)
+    // 3. Filter by toggle. Omitted keys use [`builtin_default_enabled`]
+    // (stock five on; extended builtins off; user agents on).
     entries
         .into_iter()
-        .filter(|e| toggle.get(&e.name).copied().unwrap_or(true))
+        .filter(|e| {
+            toggle
+                .get(&e.name)
+                .copied()
+                .unwrap_or_else(|| super::config::builtin_default_enabled(&e.name))
+        })
         .collect()
 }
 
@@ -309,10 +315,7 @@ fn by_name_in_cwd_with_home(
 /// These are the pre-defined agent profiles that can be launched via the
 /// Task tool. User/project-level agent files can shadow these by name.
 ///
-/// The list covers the core built-in agents:
-/// - `general-purpose` — all tools, autonomous research & multi-step tasks
-/// - `explore` — fast read-only codebase exploration (fast model hint)
-/// - `plan` — read-only architecture & implementation planning
+/// The list covers every cataloged [`BuiltinAgentName`] (open by default).
 pub fn builtin_subagents() -> Vec<AgentDefinition> {
     BuiltinAgentName::subagent_variants()
         .iter()
@@ -1059,6 +1062,35 @@ mod tests {
         }
     }
 
+    /// Catalog size under the open-all-builtins policy (`subagent_variants()`).
+    fn builtin_subagent_count() -> usize {
+        BuiltinAgentName::subagent_variants().len()
+    }
+
+    /// Count of builtins enabled when `[subagents.toggle]` is empty.
+    fn default_enabled_builtin_count() -> usize {
+        BuiltinAgentName::subagent_variants()
+            .iter()
+            .filter(|b| b.default_enabled())
+            .count()
+    }
+
+    /// Toggle map that enables every cataloged builtin (tests that need full catalog).
+    fn toggle_all_builtins_on() -> HashMap<String, bool> {
+        BuiltinAgentName::subagent_variants()
+            .iter()
+            .map(|b| (b.as_ref().to_string(), true))
+            .collect()
+    }
+
+    /// Toggle map that disables every cataloged builtin subagent.
+    fn toggle_all_builtins_off() -> HashMap<String, bool> {
+        BuiltinAgentName::subagent_variants()
+            .iter()
+            .map(|b| (b.as_ref().to_string(), false))
+            .collect()
+    }
+
     #[test]
     fn test_orchestrator_from_str_resolves() {
         use std::str::FromStr;
@@ -1088,10 +1120,22 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_returns_3_builtins_when_no_user_agents() {
-        let entries = merge_subagents(vec![], &HashMap::new());
-        assert_eq!(entries.len(), 3);
+    fn test_merge_returns_all_cataloged_builtins_when_no_user_agents() {
+        let n = builtin_subagent_count();
+        let entries = merge_subagents(vec![], &toggle_all_builtins_on());
+        assert_eq!(
+            entries.len(),
+            n,
+            "with all toggles on, catalog must expose every BuiltinAgentName variant"
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        for b in BuiltinAgentName::subagent_variants() {
+            assert!(
+                names.contains(&b.as_ref()),
+                "missing builtin subagent {}",
+                b.as_ref()
+            );
+        }
         assert!(names.contains(&"general-purpose"));
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"plan"));
@@ -1108,9 +1152,10 @@ mod tests {
 
     #[test]
     fn test_merge_filters_toggled_off_builtins() {
+        let n = default_enabled_builtin_count();
         let toggle = HashMap::from([("plan".to_string(), false)]);
         let entries = merge_subagents(vec![], &toggle);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), n - 1);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"general-purpose"));
         assert!(names.contains(&"explore"));
@@ -1118,14 +1163,27 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_default_hides_extended_builtins() {
+        let entries = merge_subagents(vec![], &HashMap::new());
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"grok-build"));
+        assert!(names.contains(&"explore"));
+        assert!(!names.contains(&"codex"), "extended builtins off by default");
+        assert!(!names.contains(&"opencode"));
+        assert!(!names.contains(&"grok-build-orchestrator"));
+        assert!(!names.contains(&"grok-build-concise"));
+    }
+
+    #[test]
     fn test_merge_includes_user_defined_agents() {
+        let n = builtin_subagent_count();
         let discovered = vec![synthetic_agent(
             "code-reviewer",
             "Reviews code",
             AgentScope::Project,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries.len(), 4); // 3 built-ins + 1 user
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries.len(), n + 1); // all toggled-on built-ins + 1 user
         let cr = entries.iter().find(|e| e.name == "code-reviewer").unwrap();
         assert_eq!(cr.description, "Reviews code");
         assert_eq!(
@@ -1139,6 +1197,7 @@ mod tests {
 
     #[test]
     fn test_merge_filters_toggled_off_user_agents() {
+        let n = default_enabled_builtin_count();
         let discovered = vec![synthetic_agent(
             "code-reviewer",
             "Reviews code",
@@ -1146,19 +1205,20 @@ mod tests {
         )];
         let toggle = HashMap::from([("code-reviewer".to_string(), false)]);
         let entries = merge_subagents(discovered, &toggle);
-        assert_eq!(entries.len(), 3); // only built-ins
+        assert_eq!(entries.len(), n); // only default-on built-ins
         assert!(entries.iter().all(|e| e.name != "code-reviewer"));
     }
 
     #[test]
     fn test_merge_project_agent_shadows_builtin() {
+        let n = builtin_subagent_count();
         let discovered = vec![synthetic_agent(
             "explore",
             "Custom explore agent",
             AgentScope::Project,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries.len(), 3); // still 3 — replaced, not appended
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries.len(), n); // same count — replaced, not appended
         let explore = entries.iter().find(|e| e.name == "explore").unwrap();
         assert_eq!(explore.description, "Custom explore agent");
         assert_eq!(
@@ -1176,7 +1236,7 @@ mod tests {
             "Custom explore",
             AgentScope::Project,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
         let explore = entries.iter().find(|e| e.name == "explore").unwrap();
         assert_eq!(
             explore.shadows_builtin,
@@ -1189,13 +1249,14 @@ mod tests {
     fn test_merge_user_level_builtin_name_is_skipped() {
         // A user-level (~/.grok/agents/) agent named "explore" should NOT shadow
         // the built-in — only project-level can do that.
+        let n = builtin_subagent_count();
         let discovered = vec![synthetic_agent(
             "explore",
             "User-level explore",
             AgentScope::User,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries.len(), 3); // still 3 built-ins
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries.len(), n); // still the full builtin catalog
         let explore = entries.iter().find(|e| e.name == "explore").unwrap();
         // Should still be the built-in, not the user-level agent
         assert!(
@@ -1214,7 +1275,7 @@ mod tests {
             "Bundled explore",
             AgentScope::Bundled,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
         let explore = entries.iter().find(|e| e.name == "explore").unwrap();
         assert!(matches!(
             &explore.source,
@@ -1224,20 +1285,25 @@ mod tests {
 
     #[test]
     fn test_merge_user_unique_name_appended() {
+        let n = builtin_subagent_count();
         let discovered = vec![synthetic_agent(
             "migration-helper",
             "Helps with migrations",
             AgentScope::User,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries.len(), 4); // 3 built-ins + 1 user
-        // Verify ordering: built-ins first, then user
-        assert!(matches!(&entries[0].source, SubagentSource::Builtin(_)));
-        assert!(matches!(&entries[1].source, SubagentSource::Builtin(_)));
-        assert!(matches!(&entries[2].source, SubagentSource::Builtin(_)));
-        assert_eq!(entries[3].name, "migration-helper");
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries.len(), n + 1); // all built-ins + 1 user
+        // Verify ordering: built-ins first, then user at index N
+        for entry in entries.iter().take(n) {
+            assert!(
+                matches!(&entry.source, SubagentSource::Builtin(_)),
+                "prefix entry {} should be builtin",
+                entry.name
+            );
+        }
+        assert_eq!(entries[n].name, "migration-helper");
         assert_eq!(
-            entries[3].source,
+            entries[n].source,
             SubagentSource::UserDefined {
                 scope: AgentScope::User
             }
@@ -1246,15 +1312,16 @@ mod tests {
 
     #[test]
     fn test_merge_bundled_unique_name_appended() {
+        let n = builtin_subagent_count();
         let discovered = vec![synthetic_agent(
             "bundled-helper",
             "Helps from bundle",
             AgentScope::Bundled,
         )];
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries[3].name, "bundled-helper");
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries[n].name, "bundled-helper");
         assert_eq!(
-            entries[3].source,
+            entries[n].source,
             SubagentSource::UserDefined {
                 scope: AgentScope::Bundled
             }
@@ -1263,11 +1330,12 @@ mod tests {
 
     #[test]
     fn test_merge_all_toggled_off_returns_empty() {
-        let toggle = HashMap::from([
-            ("general-purpose".to_string(), false),
-            ("explore".to_string(), false),
-            ("plan".to_string(), false),
-        ]);
+        let toggle = toggle_all_builtins_off();
+        assert_eq!(
+            toggle.len(),
+            builtin_subagent_count(),
+            "must list every cataloged builtin in the all-off toggle"
+        );
         let entries = merge_subagents(vec![], &toggle);
         assert!(entries.is_empty(), "all toggled off should return empty");
     }
@@ -1277,9 +1345,10 @@ mod tests {
         // Simulate: discover() skips invalid files (returns empty for that file).
         // So if a user's explore.md is invalid, discover() won't include it,
         // and the built-in explore remains.
+        let n = builtin_subagent_count();
         let discovered = vec![]; // no valid user agents discovered
-        let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries.len(), 3);
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
+        assert_eq!(entries.len(), n);
         let explore = entries.iter().find(|e| e.name == "explore").unwrap();
         assert!(matches!(
             &explore.source,
@@ -1293,7 +1362,7 @@ mod tests {
             synthetic_agent("my-agent", "Project version", AgentScope::Project),
             synthetic_agent("my-agent", "User version", AgentScope::User),
         ];
-        let entries = merge_subagents(discovered, &HashMap::new());
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
         let my_agent: Vec<_> = entries.iter().filter(|e| e.name == "my-agent").collect();
         assert_eq!(my_agent.len(), 1, "should dedup by name");
         assert_eq!(
@@ -1310,7 +1379,7 @@ mod tests {
             synthetic_agent("reviewer", "Bundled reviewer", AgentScope::Bundled),
             synthetic_agent("reviewer", "User reviewer", AgentScope::User),
         ];
-        let entries = merge_subagents(discovered, &HashMap::new());
+        let entries = merge_subagents(discovered, &toggle_all_builtins_on());
         let reviewer = entries.iter().find(|e| e.name == "reviewer").unwrap();
         assert_eq!(reviewer.description, "User reviewer");
         assert_eq!(
@@ -1334,13 +1403,26 @@ mod tests {
             "A test subagent",
         );
 
+        let n = default_enabled_builtin_count();
         let entries = all_subagents_with_home(tmp.path(), &HashMap::new(), None, None);
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), n + 1);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["general-purpose", "explore", "plan", "test-agent"]
+        for b in BuiltinAgentName::subagent_variants()
+            .iter()
+            .filter(|b| b.default_enabled())
+        {
+            assert!(
+                names.contains(&b.as_ref()),
+                "missing default-on builtin {}",
+                b.as_ref()
+            );
+        }
+        assert!(
+            names.contains(&"test-agent"),
+            "project agent file must appear in the merged list"
         );
+        // Default-on built-ins first, project agent appended.
+        assert_eq!(entries[n].name, "test-agent");
     }
 
     #[test]
@@ -1548,6 +1630,24 @@ mod tests {
         let toggle = HashMap::from([("test-agent".to_string(), false)]);
         let entries = all_subagents_with_home(tmp.path(), &toggle, None, None);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["general-purpose", "explore", "plan"]);
+        assert_eq!(
+            names.len(),
+            default_enabled_builtin_count(),
+            "toggling off project agent must leave default-on builtins"
+        );
+        for b in BuiltinAgentName::subagent_variants()
+            .iter()
+            .filter(|b| b.default_enabled())
+        {
+            assert!(
+                names.contains(&b.as_ref()),
+                "missing default-on builtin {}",
+                b.as_ref()
+            );
+        }
+        assert!(
+            !names.contains(&"test-agent"),
+            "toggled-off project agent must not appear"
+        );
     }
 }

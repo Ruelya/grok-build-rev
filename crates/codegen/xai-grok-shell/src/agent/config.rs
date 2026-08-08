@@ -1040,6 +1040,10 @@ pub struct ModelsConfig {
     pub web_search: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_summary: Option<String>,
+    /// Optional dedicated model for session recap (`/recap` + auto recap).
+    /// When set, wins over the OAuth-preferred official built-in model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recap: Option<String>,
     /// Vision model used to transcribe user-supplied
     /// images via a separate endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1623,6 +1627,10 @@ pub struct Config {
     /// (`default_session_summary_model`) when unset; see `ModelOverrideConfig::resolve`.
     #[serde(skip)]
     pub session_summary_model: Option<String>,
+    /// Optional recap model override from `[models] recap`. `None` ⇒ OAuth
+    /// prefers the official built-in model; without OAuth, the session model.
+    #[serde(skip)]
+    pub recap_model: Option<String>,
     /// Image describe model (`grok-build` default via `ModelOverrideConfig::resolve`).
     #[serde(skip)]
     pub image_description_model: Option<String>,
@@ -1879,6 +1887,7 @@ impl Default for Config {
             requirements: Requirements::default(),
             web_search_model: crate::models::default_web_search_model().to_owned(),
             session_summary_model: None,
+            recap_model: None,
             image_description_model: None,
             prompt_suggest_model_pin: crate::config::PromptSuggestModelPin::Unpinned,
         };
@@ -2156,6 +2165,9 @@ impl Config {
         config.session_summary_model = model_overrides.session_summary;
         config.image_description_model = model_overrides.image_description;
         config.prompt_suggest_model_pin = model_overrides.prompt_suggestion;
+        // Recap model is a simple `[models] recap` override (not part of
+        // ModelOverrideConfig); copy when present.
+        config.recap_model = config.models.recap.clone();
         config.apply_env_overrides();
         Ok(config)
     }
@@ -2279,6 +2291,7 @@ impl Config {
         self.session_summary_model = models.session_summary;
         self.image_description_model = models.image_description;
         self.prompt_suggest_model_pin = models.prompt_suggestion;
+        self.recap_model = self.models.recap.clone();
         self.cli_experimental_memory = ctx.cli_experimental_memory;
         self.cli_no_memory = ctx.cli_no_memory;
         let mem = crate::config::MemoryConfig::resolve(
@@ -3870,6 +3883,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,
                 stream_tool_calls: None,
+                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             };
             (key, config)
@@ -3907,7 +3921,12 @@ pub struct ModelEntryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<EnvKeys>,
     /// Which API backend to use for this model.
-    /// Values: "chat_completions" (default), "responses"
+    /// Values: `"chat_completions"` (default),
+    /// `"openai_chat_completions"` (OpenAI-compatible chat; lenient SSE parse),
+    /// `"responses"` (xAI/strict),
+    /// `"openai_responses"` (OpenAI-compatible / AxonHub; lenient SSE parse),
+    /// `"messages"`,
+    /// `"anthropic_messages"` (Anthropic-compatible messages; lenient SSE parse).
     #[serde(default)]
     pub api_backend: ApiBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3990,6 +4009,9 @@ pub struct ModelEntryConfig {
     /// flag should leave this unset to avoid request errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// When true, main Responses turns auto-attach a session-stable `prompt_cache_key`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to
     /// the all-disabled state via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "is_default_laziness_detector")]
@@ -4061,6 +4083,8 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
+    /// When true, main Responses turns auto-attach a session-stable `prompt_cache_key`.
+    pub auto_prompt_cache_key: Option<bool>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4133,7 +4157,7 @@ impl ConfigModelOverride {
         if let Some(v) = self.supports_reasoning_effort {
             entry.info.supports_reasoning_effort = v;
         } else if !entry.info.supports_reasoning_effort
-            && matches!(entry.info.api_backend, ApiBackend::Messages)
+            && entry.info.api_backend.is_messages_api()
         {
             entry.info.supports_reasoning_effort = true;
         }
@@ -4154,6 +4178,9 @@ impl ConfigModelOverride {
         }
         if self.stream_tool_calls.is_some() {
             entry.info.stream_tool_calls = self.stream_tool_calls;
+        }
+        if let Some(v) = self.auto_prompt_cache_key {
+            entry.info.auto_prompt_cache_key = v;
         }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
@@ -4242,6 +4269,10 @@ pub struct ModelInfo {
     pub show_model_fingerprint: bool,
     /// When `Some(true)`, the sampler injects `stream_tool_calls: true`
     pub stream_tool_calls: Option<bool>,
+    /// When true, main Responses turns auto-attach a stable session-derived
+    /// `prompt_cache_key` (see `xai_grok_sampling_types::resolve_main_auto_prompt_cache_key`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to
     /// the all-disabled state — the feature is per-model opt-in with a
     /// second-step `max_nudges_per_session > 0` opt-in for actually
@@ -4285,6 +4316,7 @@ impl ModelInfo {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         }
     }
@@ -4322,6 +4354,7 @@ impl ModelInfo {
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
+            auto_prompt_cache_key: entry.auto_prompt_cache_key,
             laziness_detector: entry.laziness_detector.clone(),
         }
     }
@@ -5078,6 +5111,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
+                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             api_key: Some(bearer),
@@ -5204,6 +5238,7 @@ pub(crate) fn sampling_config_for_model(
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
+        auto_prompt_cache_key: info.auto_prompt_cache_key,
         idle_timeout_secs: None,
         client_identifier: None,
         deployment_id,
@@ -5291,6 +5326,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,
@@ -6508,6 +6544,7 @@ reasoning_effort = "low"
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
+                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             api_key: api_key.map(|s| s.to_string()),
@@ -7533,6 +7570,7 @@ reasoning_effort = "low"
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         };
         let info = ModelInfo::from_config(&entry);
@@ -7692,6 +7730,7 @@ reasoning_effort = "low"
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         };
         let info = ModelInfo::from_config(&entry);
@@ -8143,6 +8182,7 @@ reasoning_effort = "low"
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         };
         let info = ModelInfo::from_config(&entry);
@@ -11992,6 +12032,7 @@ default = "grok-4.5"
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
+                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,

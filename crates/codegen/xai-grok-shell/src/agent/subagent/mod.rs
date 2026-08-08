@@ -247,6 +247,13 @@ pub(crate) struct SubagentSpawnContext {
     /// Pre-resolved file tool overrides (hashline vs standard) from the parent.
     /// `None` means use the standard (default) file tools.
     pub file_tool_overrides: Option<Vec<xai_grok_tools::registry::types::ToolConfig>>,
+    /// Optional named toolset style from parent config (`[toolset] style = "explore"`).
+    ///
+    /// When `Some` and the name resolves via [`xai_grok_agent::toolset_for_preset`],
+    /// the subagent's tool list is replaced after harness resolution — same
+    /// semantics as the main session. When `None`/unknown, the agent type's
+    /// default (post-harness) toolset is left unchanged.
+    pub toolset_style: Option<String>,
     /// Parent session's agent config snapshot.
     pub agent_config: Option<crate::agent::config::Config>,
     /// GCS bucket URL for trace uploads.
@@ -795,6 +802,7 @@ async fn read_parent_sampling_config(
                 force_http1: false,
                 max_retries: None,
                 stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
+                auto_prompt_cache_key: false,
                 idle_timeout_secs: None,
                 client_identifier: ctx.sampling_config.client_identifier.clone(),
                 deployment_id: ctx.sampling_config.deployment_id.clone(),
@@ -1643,6 +1651,12 @@ fn resolve_subagent_toolset(
         subagent_type,
         &resolution_context,
         definition,
+    );
+    // Same `[toolset] style` as the main session. Applied *after* harness so a
+    // configured style wins; unset / unknown style is a no-op (keeps defaults).
+    xai_grok_agent::config::apply_toolset_style_override(
+        definition,
+        ctx.toolset_style.as_deref(),
     );
 }
 /// Map a resolved `ToolServerConfig` into a [`SubagentTypeSummary`].

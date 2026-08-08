@@ -1666,6 +1666,78 @@ fn subagent_keeps_default_flavor_when_parent_model_is_non_strict() {
             "a non-strict parent model must leave subagents on the default harness",
         );
 }
+
+/// `[toolset] style` applies to subagents after harness resolution.
+/// Unset / unknown style leaves the agent-type default tool list intact.
+#[test]
+fn subagent_toolset_style_override_and_default() {
+    use xai_grok_agent::config::toolset_for_preset;
+    let ctx_default = ctx_with_toggle(HashMap::new());
+    assert!(ctx_default.toolset_style.is_none());
+
+    let mut def_default = resolve_agent_definition("general-purpose", &ctx_default)
+        .expect("resolves");
+    let baseline_ids: Vec<_> = def_default
+        .tool_config
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    resolve_subagent_toolset("general-purpose", None, &ctx_default, &mut def_default);
+    let after_default: Vec<_> = def_default
+        .tool_config
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    // No style → toolset unchanged by style path (still agent default post-harness).
+    assert_eq!(
+        after_default, baseline_ids,
+        "unset toolset_style must keep default toolset"
+    );
+
+    let mut ctx_explore = ctx_with_toggle(HashMap::new());
+    ctx_explore.toolset_style = Some("explore".to_string());
+    let mut def_explore = resolve_agent_definition("general-purpose", &ctx_explore)
+        .expect("resolves");
+    resolve_subagent_toolset("general-purpose", None, &ctx_explore, &mut def_explore);
+    let explore_preset = toolset_for_preset("explore").expect("explore preset");
+    let explore_ids: Vec<_> = explore_preset
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    let got: Vec<_> = def_explore
+        .tool_config
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(
+        got, explore_ids,
+        "toolset_style=explore must replace subagent tools with explore preset"
+    );
+    assert_ne!(
+        got, after_default,
+        "explore style must differ from general-purpose default"
+    );
+
+    let mut ctx_unknown = ctx_with_toggle(HashMap::new());
+    ctx_unknown.toolset_style = Some("does-not-exist".to_string());
+    let mut def_unknown = resolve_agent_definition("general-purpose", &ctx_unknown)
+        .expect("resolves");
+    resolve_subagent_toolset("general-purpose", None, &ctx_unknown, &mut def_unknown);
+    let unknown_ids: Vec<_> = def_unknown
+        .tool_config
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(
+        unknown_ids, after_default,
+        "unknown style must leave default toolset unchanged"
+    );
+}
 fn test_gcs_context(ctx: &SubagentSpawnContext) -> GcsUploadContext {
     GcsUploadContext {
         bucket_url: None,
@@ -1850,6 +1922,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,
@@ -2134,6 +2207,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
         reasoning_effort: None,
         stream_tool_calls: None,
+    auto_prompt_cache_key: false,
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

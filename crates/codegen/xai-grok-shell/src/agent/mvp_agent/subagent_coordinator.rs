@@ -473,6 +473,8 @@ impl MvpAgent {
                     None
                 }
             },
+            // Parent `[toolset] style` — applied to subagents after harness toolset.
+            toolset_style: self.cfg.borrow().toolset.style.clone(),
             gcs_bucket_url,
             agent_config: Some(self.cfg.borrow().clone()),
             gcs_upload_method,

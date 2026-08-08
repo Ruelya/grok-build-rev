@@ -268,18 +268,20 @@ pub struct AgentsModalState {
     /// Indices of expanded personas (showing description + capability tags).
     pub persona_expanded: std::collections::HashSet<usize>,
 }
-/// Built-in agent names that should be shown to the user.
-/// Skips internal variants (GrokBuildConcise, GrokBuildPlan,
-/// GrokBuildPlanNoSubagents, GrokBuildAskUser, Codex, Opencode,
-/// CursorExtended, GrokBuildOrchestrator).
+/// Built-in agent names shown in `/agents`.
+///
+/// Full catalog (`subagent_variants`) so extended types can be toggled on
+/// via `t` / `[subagents.toggle]`. Default **enabled** state is
+/// [`BuiltinAgentName::default_enabled`] (stock five on; rest off).
 fn user_visible_builtins() -> &'static [BuiltinAgentName] {
-    &[
-        BuiltinAgentName::GrokBuild,
-        BuiltinAgentName::GeneralPurpose,
-        BuiltinAgentName::Explore,
-        BuiltinAgentName::Plan,
-        BuiltinAgentName::BrowserUse,
-    ]
+    BuiltinAgentName::subagent_variants()
+}
+
+fn agent_enabled_from_toggle(name: &str, toggle: &HashMap<String, bool>) -> bool {
+    toggle
+        .get(name)
+        .copied()
+        .unwrap_or_else(|| xai_grok_agent::config::builtin_default_enabled(name))
 }
 impl AgentsModalState {
     /// Create a new agents modal, discovering agents from `cwd` and
@@ -384,7 +386,7 @@ pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<Agent
     for &builtin in user_visible_builtins() {
         let def = builtin.definition();
         let name = def.name.clone();
-        let enabled = toggle.get(&name).copied().unwrap_or(true);
+        let enabled = agent_enabled_from_toggle(&name, toggle);
         entries.push(AgentListEntry {
             name,
             description: def.description.clone(),
@@ -420,7 +422,7 @@ pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<Agent
         if let Some(pos) = entries.iter().position(|e| e.name == def.name) {
             let existing_priority = scope_priority(entries[pos].scope);
             if scope_priority(def.scope) > existing_priority {
-                let enabled = toggle.get(&def.name).copied().unwrap_or(true);
+                let enabled = agent_enabled_from_toggle(&def.name, toggle);
                 entries[pos] = AgentListEntry {
                     name: def.name.clone(),
                     description: def.description.clone(),
@@ -433,7 +435,7 @@ pub fn build_agent_list(cwd: &Path, toggle: &HashMap<String, bool>) -> Vec<Agent
                 };
             }
         } else {
-            let enabled = toggle.get(&def.name).copied().unwrap_or(true);
+            let enabled = agent_enabled_from_toggle(&def.name, toggle);
             entries.push(AgentListEntry {
                 name: def.name.clone(),
                 description: def.description.clone(),
@@ -2516,6 +2518,35 @@ pub fn handle_agents_mouse(state: &mut AgentsModalState, mouse: &MouseEvent) -> 
 mod tests {
     use super::*;
     use xai_grok_shell::agent::config::DEFAULT_AGENT_TYPE;
+    #[test]
+    fn build_agent_list_includes_every_subagent_variant() {
+        let list = build_agent_list(Path::new("/tmp/no-project-agents-modal"), &HashMap::new());
+        let builtin_names: std::collections::HashSet<&str> = list
+            .iter()
+            .filter(|e| e.is_builtin)
+            .map(|e| e.name.as_str())
+            .collect();
+        let expected = BuiltinAgentName::subagent_variants();
+        assert_eq!(
+            builtin_names.len(),
+            expected.len(),
+            "builtin count in /agents list must match catalog: got {builtin_names:?}"
+        );
+        for b in expected {
+            let name = b.definition().name;
+            assert!(
+                builtin_names.contains(name.as_str()),
+                "/agents list missing spawnable builtin `{name}`"
+            );
+            let entry = list.iter().find(|e| e.name == name).unwrap();
+            assert_eq!(
+                entry.enabled,
+                b.default_enabled(),
+                "default enabled for {name}"
+            );
+        }
+    }
+
     #[test]
     fn agents_tab_next_cycles() {
         assert_eq!(AgentsTab::Agents.next(), AgentsTab::Personas);

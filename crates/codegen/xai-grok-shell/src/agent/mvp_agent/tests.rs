@@ -2271,6 +2271,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,

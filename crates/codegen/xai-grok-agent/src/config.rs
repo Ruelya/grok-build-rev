@@ -260,6 +260,22 @@ pub fn toolset_for_preset(preset: &str) -> Option<ToolServerConfig> {
         .map(|(_, toolset)| toolset)
         .or_else(|| registered_toolset_preset(&normalized))
 }
+
+/// Apply an optional user-configured toolset style over an agent definition.
+///
+/// Used for both the main session and subagents. When `style` is
+/// `None`/empty/unknown, `definition.tool_config` is left **unchanged**
+/// (that agent type's default — or the post-harness toolset for subagents).
+/// When it resolves via [`toolset_for_preset`], the definition's tool list
+/// is replaced entirely.
+pub fn apply_toolset_style_override(definition: &mut AgentDefinition, style: Option<&str>) {
+    let Some(style) = style.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Some(ts) = toolset_for_preset(style) {
+        definition.tool_config = ts;
+    }
+}
 fn default_grok_build_toolset() -> ToolServerConfig {
     ToolServerConfig {
         tools: vec![
@@ -673,9 +689,9 @@ where
 /// are defined in exactly one place. The enum covers all built-in
 /// agents for centralized name management and `by_name()` dispatch.
 ///
-/// `subagent_variants()` returns only the 3 that are exposed to the LLM
-/// via the `TaskTool` description. The remaining 6 are top-level agent
-/// profiles resolvable by name but not advertised as subagent types.
+/// `subagent_variants()` returns every cataloged built-in (all enum variants)
+/// so they are spawnable/selectable under default config. Per-agent hide still
+/// applies via `[subagents.toggle]` / disallow lists.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr, IntoStaticStr,
 )]
@@ -725,9 +741,44 @@ impl BuiltinAgentName {
         }
     }
     /// Built-in agents available as subagents via the Task tool.
+    ///
+    /// Catalog lists every [`BuiltinAgentName`] variant. Whether each is
+    /// **enabled** by default is controlled by [`Self::default_enabled`]
+    /// (stock five on; extended variants off until `[subagents.toggle]`).
     pub fn subagent_variants() -> &'static [Self] {
-        &[Self::GeneralPurpose, Self::Explore, Self::Plan]
+        use strum::IntoEnumIterator;
+        use std::sync::OnceLock;
+        static ALL: OnceLock<Vec<BuiltinAgentName>> = OnceLock::new();
+        ALL.get_or_init(|| BuiltinAgentName::iter().collect())
+            .as_slice()
     }
+
+    /// Default on/off when `[subagents.toggle.<name>]` is omitted.
+    ///
+    /// **On by default** (stock UX): `grok-build`, `general-purpose`, `explore`,
+    /// `plan`, `browser-use`.
+    ///
+    /// **Off by default** (fork-opened catalog; enable via `/agents` or config):
+    /// concise / plan variants / ask-user / codex / opencode / orchestrator.
+    pub fn default_enabled(self) -> bool {
+        matches!(
+            self,
+            Self::GrokBuild
+                | Self::GeneralPurpose
+                | Self::Explore
+                | Self::Plan
+                | Self::BrowserUse
+        )
+    }
+}
+
+/// Resolve default enable for a subagent name when config omits the key.
+/// Unknown (user-defined) names default to **enabled**.
+pub fn builtin_default_enabled(name: &str) -> bool {
+    use std::str::FromStr;
+    BuiltinAgentName::from_str(name)
+        .map(|b| b.default_enabled())
+        .unwrap_or(true)
 }
 /// Portable agent identity — parsed from .grok/agents/*.md.
 /// Usable as both a top-level agent and a subagent definition.
@@ -1715,6 +1766,48 @@ mod tests {
         }
         assert!(toolset_for_preset("does-not-exist").is_none());
     }
+
+    #[test]
+    fn apply_toolset_style_override_changes_tool_names() {
+        let mut def = AgentDefinition::default_grok_build();
+        let baseline: Vec<_> = def
+            .tool_config
+            .tools
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        apply_toolset_style_override(&mut def, None);
+        let still: Vec<_> = def
+            .tool_config
+            .tools
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(baseline, still, "None style keeps agent default toolset");
+
+        apply_toolset_style_override(&mut def, Some("explore"));
+        let explore_ids: Vec<_> = def
+            .tool_config
+            .tools
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_ne!(
+            baseline, explore_ids,
+            "explore style must yield a different tool-name set"
+        );
+        apply_toolset_style_override(&mut def, Some("does-not-exist"));
+        let after_unknown: Vec<_> = def
+            .tool_config
+            .tools
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert_eq!(
+            explore_ids, after_unknown,
+            "unknown style must leave the previous toolset intact"
+        );
+    }
     #[test]
     fn presets_select_distinct_toolsets_by_size() {
         let gb = toolset_for_preset("grok-build").unwrap();
@@ -2551,11 +2644,25 @@ description: Test default tool config
     }
     #[test]
     fn test_builtin_agent_name_subagent_variants() {
+        use strum::IntoEnumIterator;
         let variants = BuiltinAgentName::subagent_variants();
-        assert_eq!(variants.len(), 3);
+        let all: Vec<_> = BuiltinAgentName::iter().collect();
+        assert_eq!(
+            variants.len(),
+            all.len(),
+            "all cataloged builtins must be open by default"
+        );
+        for v in &all {
+            assert!(
+                variants.contains(v),
+                "missing builtin from subagent_variants: {v:?}"
+            );
+        }
         assert!(variants.contains(&BuiltinAgentName::GeneralPurpose));
         assert!(variants.contains(&BuiltinAgentName::Explore));
         assert!(variants.contains(&BuiltinAgentName::Plan));
+        assert!(variants.contains(&BuiltinAgentName::BrowserUse));
+        assert!(variants.contains(&BuiltinAgentName::GrokBuildOrchestrator));
     }
     #[test]
     fn test_all_builtins_have_inherit_model() {
