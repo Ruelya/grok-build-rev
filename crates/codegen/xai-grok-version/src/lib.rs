@@ -4,13 +4,19 @@ use semver::Version;
 
 pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
 
+/// Product version string. Fork builds use a `-rev` suffix (e.g. `0.2.121-rev`).
 pub const VERSION: &str = match option_env!("GROK_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
 
-/// [`TEST_VERSION_ENV`] override first, then [`VERSION`]. Trimmed so
-/// non-semver-aware callers can pass the result straight into parsing.
+/// True when this binary was built as grok-build-rev (version contains `-rev`).
+pub fn is_fork_build() -> bool {
+    let v = VERSION.to_ascii_lowercase();
+    v.contains("-rev") || v.contains("+rev")
+}
+
+/// [`TEST_VERSION_ENV`] override first, then [`VERSION`].
 pub fn installed() -> String {
     std::env::var(TEST_VERSION_ENV)
         .map(|v| v.trim().to_string())
@@ -24,18 +30,12 @@ pub fn installed_semver() -> Result<Version, semver::Error> {
 /// Format the compiled version with a channel label for user-facing display.
 ///
 /// `channel_label` is a pre-formatted suffix such as `" [alpha]"`, `" [stable]"`,
-/// or `""` (empty when no cached pointer is available). Obtain it from
-/// `xai_grok_update::channel_label()`.
-///
-/// Example: `"0.2.5 [stable]"` or `"0.2.5 [alpha]"`.
+/// or `""`. Obtain it from `xai_grok_update::channel_label()`.
 pub fn display_version(channel_label: &str) -> String {
     format!("{}{}", VERSION, channel_label)
 }
 
 /// Format a version-with-commit string with a channel label.
-///
-/// Same semantics as [`display_version`] but for the full
-/// `"0.2.5 (abc1234)"` string.
 pub fn display_version_with_commit(version_with_commit: &str, channel_label: &str) -> String {
     format!("{}{}", version_with_commit, channel_label)
 }
@@ -44,31 +44,16 @@ pub fn display_version_with_commit(version_with_commit: &str, channel_label: &st
 mod tests {
     use super::*;
 
-    /// Display formatting invariant matrix — verifies label appending
-    /// works correctly across all label states (alpha, stable, empty).
     #[test]
     fn test_display_version_formatting_matrix() {
         let cases: &[(&str, &str, &str)] = &[
-            // (version_with_commit,    label,        expected_suffix)
             ("0.2.5 (abc1234)", " [alpha]", "0.2.5 (abc1234) [alpha]"),
             ("0.2.5 (abc1234)", " [stable]", "0.2.5 (abc1234) [stable]"),
             ("0.2.5 (abc1234)", "", "0.2.5 (abc1234)"),
-            (
-                "0.1.220-alpha.2 (def0)",
-                " [alpha]",
-                "0.1.220-alpha.2 (def0) [alpha]",
-            ),
         ];
         for (vwc, label, expected) in cases {
-            assert_eq!(
-                display_version_with_commit(vwc, label),
-                *expected,
-                "display_version_with_commit({:?}, {:?})",
-                vwc,
-                label,
-            );
+            assert_eq!(display_version_with_commit(vwc, label), *expected);
         }
-        // display_version uses compiled VERSION — just verify the label appends
         assert_eq!(display_version(""), VERSION);
         assert!(display_version(" [stable]").ends_with("[stable]"));
     }

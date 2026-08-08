@@ -532,11 +532,17 @@ fn derive_channel<'a>(current: &str, stable: &str) -> Option<&'a str> {
 /// stable pointer, `Some("stable")` when at or behind, or `None` when no
 /// cached pointer is available (first launch, old cache format, parse error).
 ///
+/// Fork builds (`*-rev`) always report `"stable"` so the label matches the
+/// official stable train rather than local `version.json` drift.
+///
 /// The result is computed once and cached for the process lifetime.
 pub fn channel_name() -> Option<&'static str> {
     use std::sync::OnceLock;
     static NAME: OnceLock<Option<&'static str>> = OnceLock::new();
     *NAME.get_or_init(|| {
+        if xai_grok_version::is_fork_build() {
+            return Some("stable");
+        }
         let stable = cached_stable_version()?;
         derive_channel(xai_grok_version::VERSION, &stable)
     })
@@ -550,11 +556,17 @@ pub fn channel_name() -> Option<&'static str> {
 /// - `" [stable]"` when at or behind stable,
 /// - `""` when no cached pointer is available (first launch, old cache format).
 ///
+/// Fork builds (`*-rev`) always show `" [stable]"` (aligned with official
+/// stable product line).
+///
 /// The result is computed once and cached for the process lifetime.
 pub fn channel_label() -> &'static str {
     use std::sync::OnceLock;
     static LABEL: OnceLock<&'static str> = OnceLock::new();
     LABEL.get_or_init(|| {
+        if xai_grok_version::is_fork_build() {
+            return " [stable]";
+        }
         let stable = match cached_stable_version() {
             Some(s) => s,
             None => return "",
