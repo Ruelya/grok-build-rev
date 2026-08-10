@@ -2,11 +2,10 @@
 /**
  * npm postinstall / `npx grok-build install`
  *
- * Installs the fork binary as the **primary** Grok client:
- *   ~/.grok/bin/grok[.exe]
+ * Thin installer (official-style): downloads the native binary from GitHub
+ * Releases into ~/.grok/bin/grok[.exe]. Themes may ship inside the npm package.
  *
- * Multi-platform: picks artifacts/bin/<platform>-<arch>/ or downloads from
- * GROK_FORK_RELEASE_BASE when bundled binary is absent.
+ * Platforms: win32-x64, linux-x64, darwin-arm64 (no Intel macOS).
  *
  * Usage:
  *   node bin/install.mjs              # install / replace official
@@ -216,30 +215,39 @@ function disableAutoUpdate(home, { dryRun = false } = {}) {
 }
 
 async function resolveSourceBinary() {
+  const t = detectTarget();
+  if (!supportedTargets().includes(t.key)) {
+    throw new Error(
+      [
+        `Unsupported platform: ${t.key}`,
+        `  shipped builds: ${supportedTargets().join(", ")}`,
+        `  (Intel macOS / other arches are not published — use Apple Silicon, Linux x64, or Windows x64)`,
+        ``,
+        `Override: GROK_FORK_BIN=/path/to/grok  or  GROK_FORK_RELEASE_BASE=https://…/releases/download/vX.Y.Z`,
+      ].join("\n")
+    );
+  }
+
   const bundled = findBundledBinary();
   if (bundled) return { path: bundled, source: "bundled" };
 
   const pkg = loadPkg();
   const url = remoteBinaryUrl(pkg);
   if (!url) {
-    const t = detectTarget();
-    const err = [
-      `No binary for ${t.key} in this package.`,
-      `  looked under: artifacts/bin/${t.key}/`,
-      `  supported keys: ${supportedTargets().join(", ")}`,
-      ``,
-      `Options:`,
-      `  1) Ship artifacts/bin/${t.key}/${t.exeName} in the npm package`,
-      `  2) Set GROK_FORK_RELEASE_BASE to a release URL prefix`,
-      `  3) Set GROK_FORK_BIN to a local built binary`,
-    ].join("\n");
-    throw new Error(err);
+    throw new Error(
+      [
+        `No binary URL for ${t.key}.`,
+        `  package version: ${pkg.version || "?"}`,
+        `  set GROK_FORK_RELEASE_BASE or GROK_FORK_BIN`,
+      ].join("\n")
+    );
   }
 
-  const cacheDir = join(PKG_ROOT, "artifacts", "cache", detectTarget().key);
+  const cacheDir = join(PKG_ROOT, "artifacts", "cache", t.key);
   mkdirSync(cacheDir, { recursive: true });
-  const dest = join(cacheDir, detectTarget().exeName);
-  if (!existsSync(dest)) {
+  const dest = join(cacheDir, t.exeName);
+  // Always re-download when missing; keep cache across reinstalls of same version.
+  if (!existsSync(dest) || fileSize(dest) < 1_000_000) {
     console.log(`Downloading ${url} …`);
     await download(url, dest);
   }

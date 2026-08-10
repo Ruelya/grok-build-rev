@@ -1,8 +1,8 @@
-built_at=2026-08-08T15:32:46+08:00
-brand=rev
-git_head=b456fbc9b5b0f400b7af8d368818cfbb98bc9e58
-git_short=b456fbc
-version=grok 1.0.0-rev (b456fbc) [stable]
-channel=stable
-npm_version=1.0.0
-notes=trial pack; themes auto-install on postinstall
+package: @ruelya/grok-build
+version: 1.0.1
+git: 44d50ed7af1aeafd809a631437327b881d9263f1
+release: https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1
+2026-08-10T02:21:58Z
+-rw-r--r-- 1 pc 197609 166776688  8月 10 10:21 ../dist-release/grok-darwin-arm64
+-rw-r--r-- 1 pc 197609 206385512  8月 10 10:21 ../dist-release/grok-linux-x64
+-rwxr-xr-x 1 pc 197609 136745984  8月 10 10:21 ../dist-release/grok-win32-x64.exe

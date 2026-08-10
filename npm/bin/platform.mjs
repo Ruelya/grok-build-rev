@@ -1,17 +1,18 @@
 /**
  * Platform / arch resolution for shipping native `grok` binaries.
  *
- * Layout (either works):
- *   artifacts/bin/<platform>-<arch>/grok[.exe]
- *   artifacts/bin/grok-<platform>-<arch>[.exe]
- *   artifacts/grok-fork[.exe]          (legacy Windows-only)
+ * Thin npm installer: prefer download from GitHub Releases, then optional
+ * local bundled/dev paths.
  *
- * Optional remote fallback:
- *   GROK_FORK_RELEASE_BASE  e.g. https://github.com/org/repo/releases/download/v1.0.0
- *   →  {base}/grok-{platform}-{arch}[.exe]
+ * Release assets (v${version}):
+ *   grok-win32-x64.exe
+ *   grok-linux-x64
+ *   grok-darwin-arm64
+ *
+ * Override: GROK_FORK_RELEASE_BASE, package.json forkReleaseBase, GROK_FORK_BIN
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,10 +20,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PKG_ROOT = resolve(__dirname, "..");
 
+const DEFAULT_REPO = "Ruelya/grok-build-rev";
+
+/** Platforms we ship (no Intel macOS). */
+export const SUPPORTED_TARGETS = ["win32-x64", "linux-x64", "darwin-arm64"];
+
 /** @returns {{ platform: string, arch: string, key: string, exeName: string }} */
 export function detectTarget() {
-  const p = process.platform; // win32 | darwin | linux | ...
-  const a = process.arch; // x64 | arm64 | ...
+  const p = process.platform;
+  const a = process.arch;
 
   let platform;
   if (p === "win32") platform = "win32";
@@ -40,6 +46,10 @@ export function detectTarget() {
   return { platform, arch, key, exeName };
 }
 
+export function isTargetSupported(key = detectTarget().key) {
+  return SUPPORTED_TARGETS.includes(key);
+}
+
 export function grokHome() {
   if (process.env.GROK_HOME) return resolve(process.env.GROK_HOME);
   return join(homedir(), ".grok");
@@ -54,9 +64,18 @@ export function mainExePath(home = grokHome()) {
   return join(binDir(home), exeName);
 }
 
+function loadPackageJson() {
+  try {
+    return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Locate a platform binary inside the npm package (no network).
- * @returns {string|null} absolute path
+ * Locate a platform binary inside the npm package or monorepo (dev).
+ * Thin packages normally have none — installer falls back to Releases.
+ * @returns {string|null}
  */
 export function findBundledBinary() {
   if (process.env.GROK_FORK_BIN) {
@@ -66,41 +85,21 @@ export function findBundledBinary() {
 
   const { platform, arch, key, exeName } = detectTarget();
   const candidates = [
-    // Preferred multi-platform layout
     join(PKG_ROOT, "artifacts", "bin", key, exeName),
     join(PKG_ROOT, "artifacts", "bin", `grok-${key}${platform === "win32" ? ".exe" : ""}`),
-    join(PKG_ROOT, "artifacts", "bin", key, "grok-fork" + (platform === "win32" ? ".exe" : "")),
-    // Legacy single-file names
     join(PKG_ROOT, "artifacts", platform === "win32" ? "grok-fork.exe" : "grok-fork"),
     join(PKG_ROOT, "artifacts", exeName),
-    // Sibling monorepo build (dev only)
     resolve(
       PKG_ROOT,
       "..",
-      "grok-build-src",
-      "dist-fork",
-      platform === "win32" ? "grok-fork.exe" : "grok-fork"
-    ),
-    resolve(
-      PKG_ROOT,
-      "..",
-      "grok-build-src",
       "target",
       "release",
       platform === "win32" ? "xai-grok-pager.exe" : "xai-grok-pager"
     ),
   ];
 
-  // Also try arch aliases (e.g. aarch64 folder names)
   if (arch === "arm64") {
-    candidates.push(
-      join(PKG_ROOT, "artifacts", "bin", `${platform}-aarch64`, exeName)
-    );
-  }
-  if (arch === "x64") {
-    candidates.push(
-      join(PKG_ROOT, "artifacts", "bin", `${platform}-amd64`, exeName)
-    );
+    candidates.push(join(PKG_ROOT, "artifacts", "bin", `${platform}-aarch64`, exeName));
   }
 
   for (const c of candidates) {
@@ -109,28 +108,37 @@ export function findBundledBinary() {
   return null;
 }
 
+/** Asset filename for a platform key on GitHub Releases. */
+export function releaseAssetName(key = detectTarget().key) {
+  return key.startsWith("win32") ? `grok-${key}.exe` : `grok-${key}`;
+}
+
 /**
- * URL to download binary for current platform (optional).
- * Set GROK_FORK_RELEASE_BASE or package.json "forkReleaseBase".
+ * Base URL for release assets, e.g.
+ * https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1
+ */
+export function releaseBaseUrl(pkgJson = null) {
+  if (process.env.GROK_FORK_RELEASE_BASE) {
+    return String(process.env.GROK_FORK_RELEASE_BASE).replace(/\/$/, "");
+  }
+  const pkg = pkgJson || loadPackageJson() || {};
+  if (pkg.forkReleaseBase) {
+    return String(pkg.forkReleaseBase).replace(/\/$/, "");
+  }
+  const ver = pkg.version;
+  if (!ver) return null;
+  return `https://github.com/${DEFAULT_REPO}/releases/download/v${ver}`;
+}
+
+/**
+ * URL to download binary for current platform.
  */
 export function remoteBinaryUrl(pkgJson = null) {
-  const { platform, arch, key } = detectTarget();
-  const base =
-    process.env.GROK_FORK_RELEASE_BASE ||
-    (pkgJson && pkgJson.forkReleaseBase) ||
-    null;
+  const base = releaseBaseUrl(pkgJson);
   if (!base) return null;
-  const file =
-    platform === "win32" ? `grok-${key}.exe` : `grok-${key}`;
-  return `${String(base).replace(/\/$/, "")}/${file}`;
+  return `${base}/${releaseAssetName()}`;
 }
 
 export function supportedTargets() {
-  return [
-    "win32-x64",
-    "darwin-x64",
-    "darwin-arm64",
-    "linux-x64",
-    "linux-arm64",
-  ];
+  return [...SUPPORTED_TARGETS];
 }

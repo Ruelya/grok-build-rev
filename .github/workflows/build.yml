@@ -1,0 +1,87 @@
+# Compile only — three platforms. Upload artifacts for manual/agent release.
+# Does NOT publish to npm or create GitHub Releases.
+
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - crates/codegen/xai-grok-pager/**
+      - crates/codegen/xai-grok-pager-bin/**
+      - crates/codegen/xai-grok-version/**
+      - Cargo.toml
+      - Cargo.lock
+      - third_party/async-openai/**
+      - .github/workflows/build.yml
+
+concurrency:
+  group: build-binaries
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            key: win32-x64
+            exe: xai-grok-pager.exe
+            asset: grok-win32-x64.exe
+          - os: ubuntu-latest
+            key: linux-x64
+            exe: xai-grok-pager
+            asset: grok-linux-x64
+          - os: macos-latest
+            key: darwin-arm64
+            exe: xai-grok-pager
+            asset: grok-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.3"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pager-${{ matrix.key }}
+          cache-on-failure: true
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p xai-grok-pager-bin --release
+          test -f "target/release/${{ matrix.exe }}"
+          mkdir -p dist
+          cp -f "target/release/${{ matrix.exe }}" "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}" || true
+          SIZE=$(wc -c < "dist/${{ matrix.asset }}" | tr -d ' ')
+          echo "size=$SIZE"
+          if [[ "$SIZE" -lt 1000000 ]]; then
+            echo "::error::Binary too small ($SIZE bytes)"
+            exit 1
+          fi
+          ls -la "dist/${{ matrix.asset }}"
+          "dist/${{ matrix.asset }}" --version || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.key }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 30
