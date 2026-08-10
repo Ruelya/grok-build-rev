@@ -164,6 +164,8 @@ jobs:
             fs.writeFileSync("package.json", JSON.stringify(p,null,2)+"\n");
             console.log(p.name, p.version, p.forkReleaseBase);
           '
+          # working-directory is npm/
+          mkdir -p artifacts
           {
             echo "package: @ruelya/grok-build"
             echo "version: ${VER}"
@@ -171,7 +173,7 @@ jobs:
             echo "release: ${BASE}"
             date -u +%Y-%m-%dT%H:%M:%SZ
             ls -la /tmp/release-assets
-          } > npm/artifacts/BUILD_INFO.txt
+          } > artifacts/BUILD_INFO.txt
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
 
