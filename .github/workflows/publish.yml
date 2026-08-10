@@ -6,6 +6,8 @@
 
 name: publish
 
+# Auto CI disabled — binaries are built and released locally (see npm/scripts/release-local.sh).
+# Keep workflow_dispatch only if someone wants to re-enable remote builds later.
 on:
   workflow_dispatch:
     inputs:
@@ -13,18 +15,6 @@ on:
         description: Optional exact version (empty = auto)
         required: false
         type: string
-  push:
-    branches:
-      - main
-    paths:
-      - npm/**
-      - crates/codegen/xai-grok-pager/**
-      - crates/codegen/xai-grok-pager-bin/**
-      - crates/codegen/xai-grok-version/**
-      - Cargo.toml
-      - Cargo.lock
-      - third_party/async-openai/**
-      - .github/workflows/publish.yml
 
 concurrency:
   group: publish-npm
