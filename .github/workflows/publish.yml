@@ -1,13 +1,18 @@
-# Build native binaries (win/linux/mac-arm) → GitHub Release assets
-# + publish thin @ruelya/grok-build npm installer (downloads assets on install).
+# Build 3 native binaries → GitHub Release assets
+# + publish thin @ruelya/grok-build (downloads assets on install).
 #
-# npm Trusted Publisher (OIDC). No fat binary in the tarball (avoids E413).
-# Version conflicts: auto patch-bump and retry.
+# Hardening goals (no more "build OK, publish dies"):
+#   1) Thin npm only (no fat binaries → avoid E413 300MB)
+#   2) Preflight: npm pack + size gate before publish
+#   3) Release binaries first, then npm (installer needs the tag)
+#   4) mkdir paths relative to working-directory
+#   5) OIDC Trusted Publisher: clear NODE_AUTH_TOKEN so OIDC is used
+#   6) Version conflict: patch-bump + re-tag assets + retry
+#
+# Platforms: win32-x64 | linux-x64 | darwin-arm64 (no Intel macOS)
 
 name: publish
 
-# Auto CI disabled — binaries are built and released locally (see npm/scripts/release-local.sh).
-# Keep workflow_dispatch only if someone wants to re-enable remote builds later.
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +20,18 @@ on:
         description: Optional exact version (empty = auto)
         required: false
         type: string
+  push:
+    branches:
+      - main
+    paths:
+      - npm/**
+      - crates/codegen/xai-grok-pager/**
+      - crates/codegen/xai-grok-pager-bin/**
+      - crates/codegen/xai-grok-version/**
+      - Cargo.toml
+      - Cargo.lock
+      - third_party/async-openai/**
+      - .github/workflows/publish.yml
 
 concurrency:
   group: publish-npm
@@ -27,12 +44,14 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   PACKAGE_NAME: "@ruelya/grok-build"
+  # Hard cap for thin installer tarball (10 MiB). Fat multi-binary packs ~250MB+ fail npm.
+  MAX_NPM_TGZ_BYTES: "10485760"
 
 jobs:
-  # win32-x64 | linux-x64 | darwin-arm64  (no Intel macOS)
   build:
     strategy:
-      fail-fast: false
+      # One platform fail → fail the matrix so publish never runs half-baked.
+      fail-fast: true
       matrix:
         include:
           - os: windows-latest
@@ -68,9 +87,17 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p xai-grok-pager-bin --release
+          test -f "target/release/${{ matrix.exe }}"
           mkdir -p dist
           cp -f "target/release/${{ matrix.exe }}" "dist/${{ matrix.asset }}"
           chmod +x "dist/${{ matrix.asset }}" || true
+          # Sanity: must look like a real binary, not a stub
+          SIZE=$(wc -c < "dist/${{ matrix.asset }}" | tr -d ' ')
+          echo "size=$SIZE"
+          if [[ "$SIZE" -lt 1000000 ]]; then
+            echo "::error::Binary too small ($SIZE bytes) — build likely incomplete"
+            exit 1
+          fi
           ls -la "dist/${{ matrix.asset }}"
           "dist/${{ matrix.asset }}" --version || true
 
@@ -83,6 +110,7 @@ jobs:
 
   publish:
     needs: build
+    if: success()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,32 +122,54 @@ jobs:
           scope: "@ruelya"
 
       - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@latest && npm --version
 
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/bins
           pattern: bin-*
+          merge-multiple: false
 
-      - name: Collect release assets
-        id: assets
+      - name: Collect + validate release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/release-assets
-          for dir in /tmp/bins/bin-*; do
-            f=$(find "$dir" -type f | head -1)
+          shopt -s nullglob
+          dirs=(/tmp/bins/bin-*)
+          if [[ ${#dirs[@]} -eq 0 ]]; then
+            echo "::error::No bin-* artifacts downloaded"
+            find /tmp/bins -type f 2>/dev/null || true
+            exit 1
+          fi
+          for dir in "${dirs[@]}"; do
+            mapfile -t files < <(find "$dir" -type f)
+            if [[ ${#files[@]} -ne 1 ]]; then
+              echo "::error::Expected exactly 1 file in $dir, got ${#files[@]}"
+              find "$dir" -type f || true
+              exit 1
+            fi
+            f="${files[0]}"
             name=$(basename "$f")
             cp -f "$f" "/tmp/release-assets/$name"
             chmod +x "/tmp/release-assets/$name" || true
-            echo "asset $name ($(wc -c < "/tmp/release-assets/$name") bytes)"
+            SIZE=$(wc -c < "/tmp/release-assets/$name" | tr -d ' ')
+            echo "asset $name size=$SIZE"
+            if [[ "$SIZE" -lt 1000000 ]]; then
+              echo "::error::Asset $name too small ($SIZE)"
+              exit 1
+            fi
           done
           ls -la /tmp/release-assets
-          test -f /tmp/release-assets/grok-win32-x64.exe
-          test -f /tmp/release-assets/grok-linux-x64
-          test -f /tmp/release-assets/grok-darwin-arm64
+          for need in grok-win32-x64.exe grok-linux-x64 grok-darwin-arm64; do
+            if [[ ! -f "/tmp/release-assets/$need" ]]; then
+              echo "::error::Missing required asset: $need"
+              exit 1
+            fi
+          done
+          echo "All 3 platform assets present."
 
-      - name: Resolve version
+      - name: Resolve version + write thin package.json
         id: ver
         working-directory: npm
         env:
@@ -130,31 +180,34 @@ jobs:
           NAME='@ruelya/grok-build'
           if [[ -n "${FORCE:-}" ]]; then
             VER="$FORCE"
+            echo "Forced version ${VER}"
           else
             LATEST=$(npm view "$NAME" version 2>/dev/null || true)
             if [[ -z "$LATEST" ]]; then
               VER=$(node -p "require('./package.json').version")
+              echo "Unpublished on npm — using package.json ${VER}"
             else
               IFS=. read -r MA MI PA <<<"$LATEST"
               PA=${PA%%[^0-9]*}
               VER="${MA}.${MI}.$((PA+1))"
+              echo "npm latest ${LATEST} → ${VER}"
             fi
           fi
-          # Write package.json version + release base for the thin installer
           BASE="https://github.com/${{ github.repository }}/releases/download/v${VER}"
-          VER="$VER" BASE="$BASE" node -e '
-            const fs=require("fs");
-            const p=JSON.parse(fs.readFileSync("package.json","utf8"));
-            p.name="@ruelya/grok-build";
-            p.version=process.env.VER;
-            p.forkReleaseBase=process.env.BASE;
-            p.publishConfig={access:"public",registry:"https://registry.npmjs.org/"};
-            // thin package: no native bins in tarball
-            p.files=(p.files||[]).filter(f => !String(f).includes("artifacts/bin"));
-            fs.writeFileSync("package.json", JSON.stringify(p,null,2)+"\n");
-            console.log(p.name, p.version, p.forkReleaseBase);
-          '
-          # working-directory is npm/
+          VER="$VER" BASE="$BASE" node <<'NODE'
+          const fs = require("fs");
+          const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          p.name = "@ruelya/grok-build";
+          p.version = process.env.VER;
+          p.forkReleaseBase = process.env.BASE;
+          p.publishConfig = { access: "public", registry: "https://registry.npmjs.org/" };
+          p.files = (p.files || []).filter((f) => !String(f).includes("artifacts/bin"));
+          if (!p.files.includes("bin")) p.files.unshift("bin");
+          fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          console.log(p.name, p.version, p.forkReleaseBase);
+          console.log("files:", p.files.join(", "));
+          NODE
+          # working-directory = npm/  → paths relative to npm/
           mkdir -p artifacts
           {
             echo "package: @ruelya/grok-build"
@@ -164,73 +217,150 @@ jobs:
             date -u +%Y-%m-%dT%H:%M:%SZ
             ls -la /tmp/release-assets
           } > artifacts/BUILD_INFO.txt
+          test -f artifacts/BUILD_INFO.txt
+          test -d artifacts/themes
+          test -f bin/install.mjs
+          test -f bin/platform.mjs
+          # Never ship fat bins from a dirty workspace
+          rm -rf artifacts/bin artifacts/cache dist 2>/dev/null || true
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
 
-      - name: GitHub Release (binaries)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VER: ${{ steps.ver.outputs.version }}
+      - name: Preflight npm pack (size gate)
+        working-directory: npm
         shell: bash
         run: |
           set -euo pipefail
-          TAG="v${VER}"
-          NOTES="Install: npm install -g @ruelya/grok-build@${VER} | Assets: grok-win32-x64.exe, grok-linux-x64, grok-darwin-arm64 (no Intel macOS) | SHA: ${GITHUB_SHA}"
+          rm -f ./*.tgz
+          npm pack
+          TGZ=$(ls ./*.tgz | head -1)
+          SIZE=$(wc -c < "$TGZ" | tr -d ' ')
+          echo "tarball=$TGZ size=$SIZE max=$MAX_NPM_TGZ_BYTES"
+          if [[ "$SIZE" -gt "$MAX_NPM_TGZ_BYTES" ]]; then
+            echo "::error::npm tarball too large ($SIZE > $MAX_NPM_TGZ_BYTES). Fat binaries must not be packed."
+            tar -tzf "$TGZ" | head -100
+            exit 1
+          fi
+          # Must not contain native release binaries
+          if tar -tzf "$TGZ" | grep -E 'grok-win32|grok-linux|grok-darwin|artifacts/bin/'; then
+            echo "::error::tarball contains binary paths — refusing publish"
+            tar -tzf "$TGZ" | grep -E 'grok-|artifacts/bin/' || true
+            exit 1
+          fi
+          echo "Preflight OK (thin installer)."
+          # keep tgz for optional debug; npm publish will repack
+          rm -f ./*.tgz
+
+      - name: GitHub Release (binaries first)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="Install: npm install -g @ruelya/grok-build@${VER} | Assets: grok-win32-x64.exe grok-linux-x64 grok-darwin-arm64 | SHA: ${GITHUB_SHA}"
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG exists — uploading/clobbering assets"
             gh release upload "$TAG" /tmp/release-assets/* \
               --repo "${{ github.repository }}" --clobber
           else
+            echo "Creating release $TAG"
             gh release create "$TAG" /tmp/release-assets/* \
               --repo "${{ github.repository }}" \
               --title "@ruelya/grok-build ${VER}" \
               --notes "$NOTES"
           fi
+          # Verify assets are downloadable before npm publish
+          for need in grok-win32-x64.exe grok-linux-x64 grok-darwin-arm64; do
+            URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${need}"
+            echo "HEAD $URL"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -L --head "$URL" || true)
+            # GitHub may return 302 → follow; final should be 200
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -L "$URL" -r 0-0 || true)
+            echo "  http=$code"
+            if [[ "$code" != "200" && "$code" != "206" ]]; then
+              echo "::error::Release asset not reachable: $URL (HTTP $code)"
+              exit 1
+            fi
+          done
+          echo "Release assets verified."
 
-      - name: npm publish thin installer (Trusted Publisher)
+      - name: npm publish thin installer (Trusted Publisher / OIDC)
         working-directory: npm
+        env:
+          # Critical: do NOT send a classic/automation token here.
+          # Empty NODE_AUTH_TOKEN forces npm OIDC Trusted Publisher exchange.
+          NODE_AUTH_TOKEN: ""
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          # Ensure we never ship multi-hundred-MB bins
-          rm -rf artifacts/bin artifacts/cache || true
-          for i in $(seq 1 20); do
+          rm -rf artifacts/bin artifacts/cache 2>/dev/null || true
+
+          publish_once() {
+            local ver
+            ver=$(node -p "require('./package.json').version")
+            echo "npm publish @ruelya/grok-build@$ver (OIDC)"
+            # --provenance requires OIDC; pairs with Trusted Publisher
+            npm publish --access public --provenance
+          }
+
+          for i in $(seq 1 15); do
             VER=$(node -p "require('./package.json').version")
-            echo "publish attempt $i: @ruelya/grok-build@$VER"
+            echo "attempt $i/15 → $VER"
             set +e
-            out=$(npm publish --access public --provenance 2>&1)
+            out=$(publish_once 2>&1)
             code=$?
             set -e
             echo "$out"
             if [[ $code -eq 0 ]]; then
               echo "OK @ruelya/grok-build@$VER"
+              # Final check registry sees the version
+              sleep 2
+              seen=$(npm view "@ruelya/grok-build@$VER" version 2>/dev/null || true)
+              if [[ "$seen" != "$VER" ]]; then
+                echo "::warning::Registry not yet showing $VER (eventual consistency). Publish exit was 0."
+              else
+                echo "Registry confirms @ruelya/grok-build@$VER"
+              fi
               exit 0
             fi
-            if echo "$out" | grep -qiE 'cannot publish over|EPUBLISHCONFLICT|previously published|version already exists|403 Forbidden'; then
-              echo "version conflict — patch bump"
+            if echo "$out" | grep -qiE 'E413|Payload Too Large'; then
+              echo "::error::E413 package too large — thin pack preflight should have caught this"
+              exit 1
+            fi
+            if echo "$out" | grep -qiE 'EOTP|one-time password'; then
+              echo "::error::EOTP: Trusted Publisher misconfigured, or NODE_AUTH_TOKEN forced a 2FA token. Configure npm Trusted Publisher for workflow publish.yml on package @ruelya/grok-build."
+              exit 1
+            fi
+            if echo "$out" | grep -qiE 'cannot publish over|EPUBLISHCONFLICT|previously published|version already exists'; then
+              echo "version $VER taken — patch bump + new Release tag"
               npm version patch --no-git-tag-version
-              # keep forkReleaseBase in sync with new version
               V2=$(node -p "require('./package.json').version")
-              node -e "
-                const fs=require('fs');
-                const p=JSON.parse(fs.readFileSync('package.json','utf8'));
-                p.forkReleaseBase='https://github.com/${{ github.repository }}/releases/download/v'+p.version;
-                fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');
-              "
-              # create matching empty? No — binaries already on previous tag only.
-              # For patch-after-conflict, re-upload assets under new tag.
-              TAG="v${V2}"
-              NOTES="patch retry ${V2}"
-              gh release create "$TAG" /tmp/release-assets/* \
-                --repo "${{ github.repository }}" \
-                --title "@ruelya/grok-build ${V2}" \
-                --notes "$NOTES" || \
-              gh release upload "$TAG" /tmp/release-assets/* \
-                --repo "${{ github.repository }}" --clobber
+              BASE2="https://github.com/${{ github.repository }}/releases/download/v${V2}"
+              V2="$V2" BASE2="$BASE2" node -e '
+                const fs=require("fs");
+                const p=JSON.parse(fs.readFileSync("package.json","utf8"));
+                p.forkReleaseBase=process.env.BASE2;
+                fs.writeFileSync("package.json", JSON.stringify(p,null,2)+"\n");
+                console.log("now", p.version, p.forkReleaseBase);
+              '
+              TAG2="v${V2}"
+              NOTES2="Install: npm install -g @ruelya/grok-build@${V2} | patch-retry | SHA: ${GITHUB_SHA}"
+              if gh release view "$TAG2" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+                gh release upload "$TAG2" /tmp/release-assets/* --repo "${{ github.repository }}" --clobber
+              else
+                gh release create "$TAG2" /tmp/release-assets/* \
+                  --repo "${{ github.repository }}" \
+                  --title "@ruelya/grok-build ${V2}" \
+                  --notes "$NOTES2"
+              fi
               continue
             fi
-            echo "publish failed (non-conflict)"
+            echo "::error::npm publish failed (not a recoverable version conflict)"
             exit "$code"
           done
+          echo "::error::Exhausted publish retries"
           exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
