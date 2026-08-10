@@ -13,6 +13,9 @@ Version stamp uses a **`-rev`** suffix, e.g. `1.0.0-rev (abc1234) [stable]`. The
 
 ### Install
 
+Native binaries: Windows x64, Linux x64, macOS arm64 (from GitHub Releases). Intel macOS not shipped.
+
+
 Replaces the official client at `~/.grok/bin/grok`.
 
 ```bash

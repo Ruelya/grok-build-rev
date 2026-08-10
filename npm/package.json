@@ -1,7 +1,7 @@
 {
   "name": "@ruelya/grok-build",
   "version": "1.0.0",
-  "description": "Grok Build fork (rev). npm install replaces the official client.",
+  "description": "Grok Build fork (rev). Thin npm installer — downloads native binary from GitHub Releases.",
   "type": "module",
   "bin": {
     "grok": "bin/grok.mjs",
@@ -15,7 +15,6 @@
   },
   "files": [
     "bin",
-    "artifacts/bin",
     "artifacts/themes",
     "artifacts/BUILD_INFO.txt",
     "artifacts/config-fork-notes.toml",
