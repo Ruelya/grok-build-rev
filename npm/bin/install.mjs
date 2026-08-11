@@ -73,8 +73,19 @@ function runVersion(exe) {
     shell: false,
     windowsHide: true,
   });
+  // SIGILL / crash → status null + signal; treat as unusable (e.g. neoverse-v2
+  // binary on Neoverse-N1 Ampere).
+  if (r.error || r.signal || (typeof r.status === "number" && r.status !== 0)) {
+    return null;
+  }
   const out = ((r.stdout || "") + (r.stderr || "")).trim();
   return out.split(/\r?\n/)[0] || null;
+}
+
+/** True when an on-disk binary exists but cannot even print --version. */
+function isBrokenBinary(exe) {
+  if (!existsSync(exe) || (fileSize(exe) || 0) < 1_000_000) return false;
+  return runVersion(exe) == null;
 }
 
 function fileSize(p) {
@@ -273,13 +284,30 @@ async function resolveSourceBinary() {
     );
   }
 
-  const cacheDir = join(PKG_ROOT, "artifacts", "cache", t.key);
+  // Versioned cache so upgrading 1.0.2 → 1.0.3 never reuses a bad binary
+  // (e.g. neoverse-v2 SIGILL on Ampere Neoverse-N1).
+  const ver = String(pkg.version || "unknown").replace(/[^\w.-]+/g, "_");
+  const cacheDir = join(PKG_ROOT, "artifacts", "cache", ver, t.key);
   mkdirSync(cacheDir, { recursive: true });
   const dest = join(cacheDir, t.exeName);
-  // Always re-download when missing; keep cache across reinstalls of same version.
-  if (!existsSync(dest) || fileSize(dest) < 1_000_000) {
+  const needFetch =
+    !existsSync(dest) ||
+    (fileSize(dest) || 0) < 1_000_000 ||
+    isBrokenBinary(dest);
+  if (needFetch) {
     console.log(`Downloading ${url} …`);
     await download(url, dest);
+  }
+  // Refuse to install a still-broken download (wrong arch / CPU baseline).
+  if (isBrokenBinary(dest)) {
+    throw new Error(
+      [
+        `Downloaded binary cannot run on this CPU (Illegal instruction / crash).`,
+        `  url: ${url}`,
+        `  tip: need a portable linux-arm64 build (target-cpu=generic, not neoverse-v2).`,
+        `  reinstall: npm i -g @ruelya/grok-build@latest && npx grok-build install`,
+      ].join("\n")
+    );
   }
   return { path: dest, source: "download", url };
 }

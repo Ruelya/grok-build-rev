@@ -34,6 +34,10 @@ rustflags = [
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "force-unwind-tables=yes"]
 
+# Linux aarch64: MUST stay portable.
+# Do NOT use target-cpu=neoverse-v2 (monorepo default for xAI fleet) — that
+# emits SVE2 / later ISA and SIGILL's on Ampere Neoverse-N1 (Oracle Cloud)
+# and other ARMv8.2 hosts. `generic` matches common cloud aarch64 (N1, Graviton2/3).
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=generic", "-C", "force-unwind-tables=yes"]
 
