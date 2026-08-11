@@ -83,14 +83,14 @@ else
   echo "==> SKIP_BUILD=1 — using existing $DIST/*"
 fi
 
-ASSETS=( "$DIST"/grok-win32-x64.exe "$DIST"/grok-linux-x64 "$DIST"/grok-darwin-arm64 )
+ASSETS=( "$DIST"/grok-win32-x64.exe "$DIST"/grok-linux-x64 "$DIST"/grok-linux-arm64 "$DIST"/grok-darwin-arm64 )
 FOUND=()
 for a in "${ASSETS[@]}"; do
   [[ -f "$a" ]] && FOUND+=("$a")
 done
 if [[ ${#FOUND[@]} -eq 0 ]]; then
   echo "error: no release assets in $DIST" >&2
-  echo "  expected any of: grok-win32-x64.exe grok-linux-x64 grok-darwin-arm64" >&2
+  echo "  expected any of: grok-win32-x64.exe grok-linux-x64 grok-linux-arm64 grok-darwin-arm64" >&2
   exit 1
 fi
 echo "==> assets to publish (${#FOUND[@]}):"
