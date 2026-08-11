@@ -24,13 +24,12 @@ grok --version                           # expect …-rev (…) [stable]
 npx grok-build restore                   # restore previous binary from backup
 ```
 
-| Platform key | Binary path in package |
-|--------------|------------------------|
-| `win32-x64` | `artifacts/bin/win32-x64/grok.exe` |
-| `darwin-arm64` | `artifacts/bin/darwin-arm64/grok` |
-| `darwin-x64` | `artifacts/bin/darwin-x64/grok` |
-| `linux-x64` | `artifacts/bin/linux-x64/grok` |
-| `linux-arm64` | `artifacts/bin/linux-arm64/grok` |
+| Platform key | Release asset |
+|--------------|---------------|
+| `win32-x64` | `grok-win32-x64.exe` |
+| `linux-x64` | `grok-linux-x64` |
+| `linux-arm64` | `grok-linux-arm64` |
+| `darwin-arm64` | `grok-darwin-arm64` |
 
 ```bash
 bash scripts/stage-binaries.sh win32-x64 ./target/release/xai-grok-pager.exe
@@ -277,13 +276,12 @@ grok --version                           # 期望 …-rev (…) [stable]
 npx grok-build restore                   # 从备份恢复上一份二进制
 ```
 
-| 平台键 | 包内二进制路径 |
-|--------|----------------|
-| `win32-x64` | `artifacts/bin/win32-x64/grok.exe` |
-| `darwin-arm64` | `artifacts/bin/darwin-arm64/grok` |
-| `darwin-x64` | `artifacts/bin/darwin-x64/grok` |
-| `linux-x64` | `artifacts/bin/linux-x64/grok` |
-| `linux-arm64` | `artifacts/bin/linux-arm64/grok` |
+| 平台键 | Release 资源 |
+|--------|--------------|
+| `win32-x64` | `grok-win32-x64.exe` |
+| `linux-x64` | `grok-linux-x64` |
+| `linux-arm64` | `grok-linux-arm64` |
+| `darwin-arm64` | `grok-darwin-arm64` |
 
 ```bash
 bash scripts/stage-binaries.sh win32-x64 ./target/release/xai-grok-pager.exe

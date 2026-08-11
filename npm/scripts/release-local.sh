@@ -13,11 +13,12 @@
 #
 # Platforms this machine can produce:
 #   Windows → grok-win32-x64.exe
-#   Linux   → grok-linux-x64
+#   Linux x64 → grok-linux-x64
+#   Linux arm64 → grok-linux-arm64
 #   macOS arm64 → grok-darwin-arm64
 #
 # Collect multi-platform assets into dist-release/ from other machines, then
-# SKIP_BUILD=1 to publish all three at once.
+# SKIP_BUILD=1 to publish all four at once.
 
 set -euo pipefail
 
@@ -47,7 +48,11 @@ detect_asset() {
       fi
       ;;
     Linux)
-      echo "linux-x64|xai-grok-pager|grok-linux-x64"
+      if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
+        echo "linux-arm64|xai-grok-pager|grok-linux-arm64"
+      else
+        echo "linux-x64|xai-grok-pager|grok-linux-x64"
+      fi
       ;;
     *)
       echo "unknown host" >&2

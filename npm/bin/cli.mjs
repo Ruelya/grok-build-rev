@@ -197,65 +197,65 @@ function installThemes(home, { dryRun = false } = {}) {
  * Replaces a previous notes block if present; never changes non-comment settings.
  */
 /**
- * Ensure [cli].auto_update = false so official auto-update cannot overwrite the fork.
- * Idempotent: if already false, no rewrite; if true/missing under [cli], set false.
+ * Point [cli] auto_update at our npm package (not official x.ai CDN).
+ * Sets auto_update = true and installer = "npm".
  */
-function disableAutoUpdate(home, { dryRun = false } = {}) {
+function configureForkUpdater(home, { dryRun = false } = {}) {
   const cfgPath = join(home, "config.toml");
+  const block =
+    `# Written by Grok Build fork install — updates via npm (@ruelya/grok-build).\n` +
+    `[cli]\nauto_update = true\ninstaller = "npm"\n`;
   if (!existsSync(cfgPath)) {
     if (dryRun) return { ok: true, action: "create-cli", path: cfgPath };
     mkdirSync(home, { recursive: true });
-    writeFileSync(
-      cfgPath,
-      `# Written by Grok Build fork install — keep auto_update off so upstream cannot clobber the fork.\n[cli]\nauto_update = false\n`,
-      "utf8"
-    );
+    writeFileSync(cfgPath, block, "utf8");
     return { ok: true, action: "create-cli", path: cfgPath };
   }
   let raw = readFileSync(cfgPath, "utf8").replace(/\r\n/g, "\n");
+  let changed = false;
 
-  // Already disabled somewhere (user may have multiple [cli] tables).
   if (/^\s*auto_update\s*=\s*false\s*$/m.test(raw)) {
-    return { ok: true, action: "already-false", path: cfgPath };
-  }
-
-  // Flip any true → false
-  if (/^\s*auto_update\s*=\s*true\s*$/m.test(raw)) {
-    const next = raw.replace(/^\s*auto_update\s*=\s*true\s*$/gm, "auto_update = false");
-    if (dryRun) return { ok: true, action: "flip-true", path: cfgPath };
-    try {
-      copyFileSync(cfgPath, cfgPath + `.bak-auto-update-${stamp()}`);
-    } catch {
-      /* ignore */
+    raw = raw.replace(/^\s*auto_update\s*=\s*false\s*$/gm, "auto_update = true");
+    changed = true;
+  } else if (!/^\s*auto_update\s*=/m.test(raw)) {
+    const cliIdx = raw.search(/^\[cli\]\s*$/m);
+    if (cliIdx >= 0) {
+      const lineEnd = raw.indexOf("\n", cliIdx);
+      const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
+      raw = raw.slice(0, insertAt) + "auto_update = true\n" + raw.slice(insertAt);
+    } else {
+      raw = raw.replace(/\s*$/, "\n\n") + "[cli]\nauto_update = true\n";
     }
-    writeFileSync(cfgPath, next, "utf8");
-    return { ok: true, action: "flip-true", path: cfgPath };
+    changed = true;
   }
 
-  // No auto_update key: append under first [cli] or create [cli]
-  const cliIdx = raw.search(/^\[cli\]\s*$/m);
-  let next;
-  let action;
-  if (cliIdx >= 0) {
-    const lineEnd = raw.indexOf("\n", cliIdx);
-    const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
-    next =
-      raw.slice(0, insertAt) +
-      "auto_update = false\n" +
-      raw.slice(insertAt);
-    action = "insert-cli";
-  } else {
-    next = raw.replace(/\s*$/, "\n\n") + "[cli]\nauto_update = false\n";
-    action = "append-cli";
+  if (/^\s*installer\s*=\s*".*"\s*$/m.test(raw)) {
+    const next = raw.replace(/^\s*installer\s*=\s*".*"\s*$/gm, 'installer = "npm"');
+    if (next !== raw) {
+      raw = next;
+      changed = true;
+    }
+  } else if (!/^\s*installer\s*=/m.test(raw)) {
+    const cliIdx = raw.search(/^\[cli\]\s*$/m);
+    if (cliIdx >= 0) {
+      const lineEnd = raw.indexOf("\n", cliIdx);
+      const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
+      raw = raw.slice(0, insertAt) + 'installer = "npm"\n' + raw.slice(insertAt);
+    } else {
+      raw = raw.replace(/\s*$/, "\n\n") + '[cli]\ninstaller = "npm"\n';
+    }
+    changed = true;
   }
-  if (dryRun) return { ok: true, action, path: cfgPath };
+
+  if (!changed) return { ok: true, action: "already-fork-npm", path: cfgPath };
+  if (dryRun) return { ok: true, action: "update-cli", path: cfgPath };
   try {
     copyFileSync(cfgPath, cfgPath + `.bak-auto-update-${stamp()}`);
   } catch {
     /* ignore */
   }
-  writeFileSync(cfgPath, next, "utf8");
-  return { ok: true, action, path: cfgPath };
+  writeFileSync(cfgPath, raw, "utf8");
+  return { ok: true, action: "update-cli", path: cfgPath };
 }
 
 /**
@@ -435,7 +435,7 @@ function cmdInstallSideBySide({ dryRun = false, bootstrap = false } = {}) {
   }
   replaceBinary(fork, dest);
   const installedThemes = installThemes(home, { dryRun: false });
-  const autoResult = disableAutoUpdate(home, { dryRun: false });
+  const autoResult = configureForkUpdater(home, { dryRun: false });
   const syncResult = installUsageSyncExample(home, { dryRun: false });
   console.log("\nInstalled fork side-by-side.");
   console.log(`  run     : ${dest}`);
@@ -513,7 +513,7 @@ function cmdApply({ dryRun = false } = {}) {
 
   const themeNames = installThemes(home, { dryRun: true });
   const cfgPlan = installConfigNotes(home, { dryRun: true });
-  const autoPlan = disableAutoUpdate(home, { dryRun: true });
+  const autoPlan = configureForkUpdater(home, { dryRun: true });
   const syncPlan = installUsageSyncExample(home, { dryRun: true });
 
   console.log(`Installed : ${exe}`);
@@ -530,7 +530,7 @@ function cmdApply({ dryRun = false } = {}) {
     console.log(`Config    : ${cfgPlan.path} (${cfgPlan.action} comment block)`);
   }
   if (autoPlan.ok) {
-    console.log(`Auto-update: ${autoPlan.action} → [cli].auto_update = false`);
+    console.log(`Auto-update: ${autoPlan.action} → [cli].auto_update=true installer=npm (@ruelya/grok-build)`);
   }
   if (syncPlan.ok) {
     console.log(`Usage sync : ${syncPlan.action} → ${syncPlan.path}`);
@@ -538,7 +538,7 @@ function cmdApply({ dryRun = false } = {}) {
 
   if (dryRun) {
     console.log(
-      "\n[dry-run] would backup stock, install fork as primary grok + themes + disable auto_update + seed usage sync.toml. No changes made."
+      "\n[dry-run] would backup stock, install fork as primary grok + themes + enable npm auto_update + seed usage sync.toml. No changes made."
     );
     return;
   }
@@ -570,7 +570,7 @@ function cmdApply({ dryRun = false } = {}) {
   replaceBinary(fork, exe);
   const installedThemes = installThemes(home, { dryRun: false });
   const cfgResult = installConfigNotes(home, { dryRun: false });
-  const autoResult = disableAutoUpdate(home, { dryRun: false });
+  const autoResult = configureForkUpdater(home, { dryRun: false });
   const syncResult = installUsageSyncExample(home, { dryRun: false });
 
   const after = runExeVersion(exe);
@@ -602,7 +602,7 @@ function cmdApply({ dryRun = false } = {}) {
     console.log(`  config : ${cfgResult.action} → ${cfgResult.path}`);
   }
   if (autoResult.ok) {
-    console.log(`  auto_update : ${autoResult.action} (disabled)`);
+    console.log(`  auto_update : ${autoResult.action} (npm @ruelya/grok-build)`);
   }
   if (syncResult.ok) {
     console.log(`  usage sync  : ${syncResult.action} → ${syncResult.path}`);

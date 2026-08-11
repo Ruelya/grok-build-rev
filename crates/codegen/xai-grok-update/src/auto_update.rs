@@ -11,8 +11,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
 use crate::version::{
-    UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
-    is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    UpdateConfig, fetch_latest_version, get_latest_version, is_version_cache_fresh,
+    npm_package_name, strip_fork_version_suffix, try_fetch_stable_pointer,
+    version_for_update_check, write_version_cache,
 };
 use xai_grok_shell::util::config;
 use xai_grok_shell::util::grok_home::{grok_application, grok_home};
@@ -28,6 +29,9 @@ const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
 const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
 /// Manual-install one-liner for this platform's bootstrap installer.
 fn manual_install_cmd() -> &'static str {
+    if xai_grok_version::is_fork_build() {
+        return "npm install -g @ruelya/grok-build";
+    }
     if cfg!(windows) {
         "irm https://x.ai/cli/install.ps1 | iex"
     } else {
@@ -37,9 +41,21 @@ fn manual_install_cmd() -> &'static str {
 
 /// Build a reinstall hint for a known installer type.
 fn reinstall_hint(installer: &str) -> String {
+    if xai_grok_version::is_fork_build() {
+        return format!(
+            "Please reinstall the fork via npm:\n  npm i -g {}",
+            npm_package_name()
+        );
+    }
     match installer {
-        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        "npm" => format!(
+            "Please reinstall via npm:\n  npm i -g {}",
+            npm_package_name()
+        ),
+        "gh-release" => format!(
+            "Please reinstall via GitHub Releases:\n  gh release download --repo {} --pattern 'grok-*' --output grok && chmod +x grok",
+            crate::version::gh_release_repo()
+        ),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd()),
     }
 }
@@ -101,7 +117,8 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
 
 pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let installer = get_installer().await.map(|value| value.to_string());
-    let current_version = get_installed_grok_version();
+    // Fork: prefer npm packageVersion (fork-install.json) over compile stamp.
+    let current_version = version_for_update_check();
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
     let channel = update_config.channel.clone();
@@ -230,7 +247,7 @@ async fn fetch_update_plan(
 /// downgraded — the decision depends on the installer, never the caller.
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
     let installer = get_installer().await?;
-    let current = get_installed_grok_version();
+    let current = version_for_update_check();
     let policy = config::VersionPolicy::resolve();
     let UpdatePlan::Install { target, .. } = fetch_update_plan(installer, update_config, &policy)
         .await
@@ -293,8 +310,8 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
         return Ok(outcome);
     };
 
-    let effective_current =
-        disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
+    let effective_current = disk_version_for_installer(installer)
+        .unwrap_or_else(version_for_update_check);
     if needs_update(
         &effective_current,
         &target,
@@ -310,7 +327,8 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     // Relaunch when the running binary differs from what's on disk in the
     // channel's update direction — covers binaries installed by other
     // processes, not just the install above.
-    let running = get_installed_grok_version();
+    // Fork npm installs: compare packageVersion (not compile stamp).
+    let running = version_for_update_check();
     if let Some(disk_now) =
         disk_version_for_installer(installer).or_else(|| outcome.installed.clone())
     {
@@ -360,6 +378,26 @@ fn env_installer() -> Option<&'static str> {
 }
 
 pub async fn get_installer() -> Option<&'static str> {
+    // Fork builds never use the official x.ai CDN / install.sh internal path.
+    // Auto-update and `grok update` must go through our npm package (or an
+    // explicit gh-release override that still targets Ruelya/grok-build-rev).
+    if xai_grok_version::is_fork_build() {
+        if let Some(i) = env_installer() {
+            return Some(match i {
+                "gh-release" => "gh-release",
+                // Rewrite official-internal → npm so leftover config cannot
+                // pull stock binaries over the fork.
+                "internal" | "npm" => "npm",
+                other => other,
+            });
+        }
+        let cfg = config::load_config().await;
+        return Some(match cfg.cli.installer.as_deref() {
+            Some("gh-release") => "gh-release",
+            _ => "npm",
+        });
+    }
+
     if let Some(i) = env_installer() {
         return Some(i);
     }
@@ -372,8 +410,11 @@ pub async fn get_installer() -> Option<&'static str> {
 }
 
 fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: bool) -> Option<bool> {
-    let current = semver::Version::parse(current).ok()?;
-    let target = semver::Version::parse(target).ok()?;
+    // Normalize fork compile stamps (`1.0.1-rev`) against plain npm versions.
+    let current_s = strip_fork_version_suffix(current);
+    let target_s = strip_fork_version_suffix(target);
+    let current = semver::Version::parse(&current_s).ok()?;
+    let target = semver::Version::parse(&target_s).ok()?;
     match channel {
         // NOTE: With the 0.2.X versioning scheme, all versions are plain
         // semver (no pre-release suffix). The pre-release checks in this
@@ -387,6 +428,8 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
                 );
                 return Some(false);
             }
+            // After strip_fork_version_suffix, remaining pre-release means a
+            // real alpha build — force upgrade onto stable.
             if !current.pre.is_empty() {
                 return Some(true);
             }
@@ -469,7 +512,7 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
         return BackgroundUpdateCheck::none();
     }
 
-    let current_version = get_installed_grok_version();
+    let current_version = version_for_update_check();
     let policy = config::VersionPolicy::resolve();
     let target_version = match fetch_update_plan(installer, update_config, &policy).await {
         Ok(UpdatePlan::Install { target, .. }) => target,
@@ -573,7 +616,7 @@ pub async fn run_update_if_available(
         tracing::warn!("Failed to save auto-update setting: {}", e);
     }
 
-    let current_version = get_installed_grok_version();
+    let current_version = version_for_update_check();
     let policy = config::VersionPolicy::resolve();
     // Don't write version.json here; only cache after confirming no update is
     // needed or after a successful install, so a failed background download
@@ -765,6 +808,14 @@ pub async fn run_install_script(
     target: Option<&str>,
     update_config: &UpdateConfig,
 ) -> Result<()> {
+    // Hard block: fork binaries must never download official x.ai/CDN artifacts.
+    if xai_grok_version::is_fork_build() && installer != "npm" && installer != "gh-release" {
+        anyhow::bail!(
+            "Fork builds cannot use the official x.ai auto-updater. \
+             Use: npm i -g {}",
+            npm_package_name()
+        );
+    }
     let result = match installer {
         "npm" => install_npm(
             target,
@@ -783,6 +834,33 @@ pub async fn run_install_script(
             e,
             reinstall_hint(installer)
         )
+    })
+}
+
+/// Fork GitHub Release asset name (matches npm thin installer / build.yml).
+///
+/// Assets: `grok-win32-x64.exe`, `grok-linux-x64`, `grok-linux-arm64`,
+/// `grok-darwin-arm64`.
+fn fork_release_asset_name() -> Result<String> {
+    let key = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "win32-x64"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x64"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-arm64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "darwin-arm64"
+    } else {
+        anyhow::bail!(
+            "This platform is not published for grok-build-rev. \
+             Supported: win32-x64, linux-x64, linux-arm64, darwin-arm64. \
+             Override: npm i -g @ruelya/grok-build or GROK_FORK_BIN=..."
+        );
+    };
+    Ok(if key.starts_with("win32") {
+        format!("grok-{key}.exe")
+    } else {
+        format!("grok-{key}")
     })
 }
 
@@ -1165,6 +1243,13 @@ async fn download_cli_artifact_from_gcs(
 }
 
 async fn install_internal(target: Option<&str>, update_config: &UpdateConfig) -> Result<()> {
+    if xai_grok_version::is_fork_build() {
+        anyhow::bail!(
+            "Official CDN install is disabled in grok-build-rev. \
+             Install/update with: npm i -g {}",
+            npm_package_name()
+        );
+    }
     install_internal_from_bases(target, update_config, crate::version::CLI_BASE_URLS).await
 }
 
@@ -2181,7 +2266,13 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     tokio::fs::create_dir_all(&download_dir).await?;
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    let binary_name = format!("grok-{}-{}", version, platform);
+    // Official assets: grok-{version}-{os}-{arch}
+    // Fork release assets: grok-win32-x64.exe / grok-linux-x64 / …
+    let binary_name = if xai_grok_version::is_fork_build() {
+        fork_release_asset_name()?
+    } else {
+        format!("grok-{}-{}", version, platform)
+    };
     let binary_path = download_dir.join(&binary_name);
     let tag = format!("v{}", version);
 
@@ -2331,8 +2422,9 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     #[cfg(target_os = "macos")]
     warn_if_other_grok_processes_running();
 
+    let pkg = npm_package_name();
     let version_arg = match target {
-        Some(ver) => format!("@xai-official/grok@{ver}"),
+        Some(ver) => format!("{pkg}@{ver}"),
         None => {
             // All current callers resolve the version via get_latest_version
             // (which applies max(stable, alpha) for the alpha channel) before
@@ -2340,10 +2432,11 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
             // logic, so warn loudly if this path is ever hit.
             tracing::warn!(
                 channel,
+                package = pkg,
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "@xai-official/grok@{}",
+                "{pkg}@{}",
                 if channel == "alpha" {
                     "alpha"
                 } else {
@@ -2442,7 +2535,7 @@ pub async fn run_update(
 
     heal_managed_install(installer).await;
 
-    let current_version = get_installed_grok_version();
+    let current_version = version_for_update_check();
     let policy = config::VersionPolicy::resolve();
 
     // When --version is given, skip the latest-version check and install directly

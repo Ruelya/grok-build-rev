@@ -1,5 +1,8 @@
-# Compile only — three platforms. Upload artifacts for manual/agent release.
+# Compile only — four platforms. Upload artifacts for manual/agent release.
 # Does NOT publish to npm or create GitHub Releases.
+#
+# Platforms: win32-x64, linux-x64, linux-arm64, darwin-arm64
+# (no Intel macOS)
 
 name: build
 
@@ -12,6 +15,7 @@ on:
       - crates/codegen/xai-grok-pager/**
       - crates/codegen/xai-grok-pager-bin/**
       - crates/codegen/xai-grok-version/**
+      - crates/codegen/xai-grok-update/**
       - Cargo.toml
       - Cargo.lock
       - third_party/async-openai/**
@@ -41,6 +45,10 @@ jobs:
             key: linux-x64
             exe: xai-grok-pager
             asset: grok-linux-x64
+          - os: ubuntu-24.04-arm
+            key: linux-arm64
+            exe: xai-grok-pager
+            asset: grok-linux-arm64
           - os: macos-latest
             key: darwin-arm64
             exe: xai-grok-pager

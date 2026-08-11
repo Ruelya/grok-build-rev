@@ -13,8 +13,9 @@ disabled_mcp_servers = []
 # [cli]
 # -----------------------------------------------------------------------------
 [cli]
-auto_update = false
-# installer = "npm" | "cargo" | …
+# Fork: keep true + installer=npm so updates use @ruelya/grok-build (never x.ai CDN)
+auto_update = true
+# installer = "npm" | "gh-release" | "internal"(blocked on fork)
 installer = "npm"
 # npm_registry = "https://registry.npmjs.org"
 # channel = "alpha" | "stable"

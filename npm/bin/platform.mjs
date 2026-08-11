@@ -7,6 +7,7 @@
  * Release assets (v${version}):
  *   grok-win32-x64.exe
  *   grok-linux-x64
+ *   grok-linux-arm64
  *   grok-darwin-arm64
  *
  * Override: GROK_FORK_RELEASE_BASE, package.json forkReleaseBase, GROK_FORK_BIN
@@ -23,7 +24,12 @@ export const PKG_ROOT = resolve(__dirname, "..");
 const DEFAULT_REPO = "Ruelya/grok-build-rev";
 
 /** Platforms we ship (no Intel macOS). */
-export const SUPPORTED_TARGETS = ["win32-x64", "linux-x64", "darwin-arm64"];
+export const SUPPORTED_TARGETS = [
+  "win32-x64",
+  "linux-x64",
+  "linux-arm64",
+  "darwin-arm64",
+];
 
 /** @returns {{ platform: string, arch: string, key: string, exeName: string }} */
 export function detectTarget() {

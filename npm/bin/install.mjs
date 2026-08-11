@@ -178,40 +178,70 @@ function installThemes(home, { dryRun = false } = {}) {
   return files.map((f) => f.replace(/\.toml$/, ""));
 }
 
-function disableAutoUpdate(home, { dryRun = false } = {}) {
+/**
+ * Point in-app auto-update at our npm package (not official x.ai CDN).
+ *
+ * Writes:
+ *   [cli]
+ *   auto_update = true
+ *   installer = "npm"
+ *
+ * The fork binary hard-blocks the official internal/CDN installer; this only
+ * ensures config matches so `grok update` uses `npm i -g @ruelya/grok-build`.
+ */
+function configureForkUpdater(home, { dryRun = false } = {}) {
   const cfgPath = join(home, "config.toml");
+  const header =
+    "# Grok Build fork — auto_update via npm (@ruelya/grok-build), never official CDN.\n";
+  const block = `${header}[cli]\nauto_update = true\ninstaller = "npm"\n`;
+
   if (!existsSync(cfgPath)) {
     if (dryRun) return { ok: true, action: "create-cli" };
     mkdirSync(home, { recursive: true });
-    writeFileSync(
-      cfgPath,
-      `# Grok Build fork — disable stock auto_update so it cannot overwrite the fork.\n[cli]\nauto_update = false\n`,
-      "utf8"
-    );
+    writeFileSync(cfgPath, block, "utf8");
     return { ok: true, action: "create-cli" };
   }
+
   let raw = readFileSync(cfgPath, "utf8").replace(/\r\n/g, "\n");
+  let changed = false;
+
   if (/^\s*auto_update\s*=\s*false\s*$/m.test(raw)) {
-    return { ok: true, action: "already-false" };
+    raw = raw.replace(/^\s*auto_update\s*=\s*false\s*$/gm, "auto_update = true");
+    changed = true;
+  } else if (!/^\s*auto_update\s*=/m.test(raw)) {
+    const cliIdx = raw.search(/^\[cli\]\s*$/m);
+    if (cliIdx >= 0) {
+      const lineEnd = raw.indexOf("\n", cliIdx);
+      const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
+      raw = raw.slice(0, insertAt) + "auto_update = true\n" + raw.slice(insertAt);
+    } else {
+      raw = raw.replace(/\s*$/, "\n\n") + "[cli]\nauto_update = true\n";
+    }
+    changed = true;
   }
-  if (/^\s*auto_update\s*=\s*true\s*$/m.test(raw)) {
-    const next = raw.replace(/^\s*auto_update\s*=\s*true\s*$/gm, "auto_update = false");
-    if (dryRun) return { ok: true, action: "flip-true" };
-    writeFileSync(cfgPath, next, "utf8");
-    return { ok: true, action: "flip-true" };
+
+  if (/^\s*installer\s*=\s*".*"\s*$/m.test(raw)) {
+    const next = raw.replace(/^\s*installer\s*=\s*".*"\s*$/gm, 'installer = "npm"');
+    if (next !== raw) {
+      raw = next;
+      changed = true;
+    }
+  } else if (!/^\s*installer\s*=/m.test(raw)) {
+    const cliIdx = raw.search(/^\[cli\]\s*$/m);
+    if (cliIdx >= 0) {
+      const lineEnd = raw.indexOf("\n", cliIdx);
+      const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
+      raw = raw.slice(0, insertAt) + 'installer = "npm"\n' + raw.slice(insertAt);
+    } else {
+      raw = raw.replace(/\s*$/, "\n\n") + '[cli]\ninstaller = "npm"\n';
+    }
+    changed = true;
   }
-  const cliIdx = raw.search(/^\[cli\]\s*$/m);
-  let next;
-  if (cliIdx >= 0) {
-    const lineEnd = raw.indexOf("\n", cliIdx);
-    const insertAt = lineEnd === -1 ? raw.length : lineEnd + 1;
-    next = raw.slice(0, insertAt) + "auto_update = false\n" + raw.slice(insertAt);
-  } else {
-    next = raw.replace(/\s*$/, "\n\n") + "[cli]\nauto_update = false\n";
-  }
-  if (dryRun) return { ok: true, action: "insert" };
-  writeFileSync(cfgPath, next, "utf8");
-  return { ok: true, action: "insert" };
+
+  if (!changed) return { ok: true, action: "already-fork-npm" };
+  if (dryRun) return { ok: true, action: "update-cli" };
+  writeFileSync(cfgPath, raw, "utf8");
+  return { ok: true, action: "update-cli" };
 }
 
 async function resolveSourceBinary() {
@@ -221,7 +251,7 @@ async function resolveSourceBinary() {
       [
         `Unsupported platform: ${t.key}`,
         `  shipped builds: ${supportedTargets().join(", ")}`,
-        `  (Intel macOS / other arches are not published — use Apple Silicon, Linux x64, or Windows x64)`,
+        `  (Intel macOS is not published — use win32-x64, linux-x64, linux-arm64, or darwin-arm64)`,
         ``,
         `Override: GROK_FORK_BIN=/path/to/grok  or  GROK_FORK_RELEASE_BASE=https://…/releases/download/vX.Y.Z`,
       ].join("\n")
@@ -310,8 +340,9 @@ async function cmdInstall({ dryRun = false } = {}) {
   }
 
   const installedThemes = installThemes(home, { dryRun: false });
-  const auto = disableAutoUpdate(home, { dryRun: false });
+  const auto = configureForkUpdater(home, { dryRun: false });
   const after = runVersion(exe);
+  const packageVersion = loadPkg().version || null;
 
   const marker = {
     appliedAt: new Date().toISOString(),
@@ -328,12 +359,14 @@ async function cmdInstall({ dryRun = false } = {}) {
     themes: installedThemes,
     autoUpdate: auto,
     package: PKG_ROOT,
-    packageVersion: loadPkg().version || null,
+    packageVersion,
+    npmPackage: "@ruelya/grok-build",
   };
   writeFileSync(join(home, MARKER), JSON.stringify(marker, null, 2) + "\n");
 
   console.log("\nInstalled Grok Build fork as primary client.");
   console.log(`  after  : ${after || "?"}`);
+  console.log(`  pkg    : @ruelya/grok-build@${packageVersion || "?"}`);
   console.log(`  run    : ${exe}`);
   console.log(`  or     : grok --version   (if ~/.grok/bin is on PATH)`);
   if (installedThemes.length) {
@@ -343,7 +376,9 @@ async function cmdInstall({ dryRun = false } = {}) {
   } else {
     console.log("  themes : (none bundled — package missing artifacts/themes/*.toml)");
   }
-  if (auto.ok) console.log(`  auto_update: ${auto.action}`);
+  if (auto.ok) {
+    console.log(`  update : npm installer (${auto.action}) — grok update → @ruelya/grok-build`);
+  }
 }
 
 function cmdRestore({ dryRun = false } = {}) {

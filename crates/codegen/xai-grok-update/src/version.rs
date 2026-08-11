@@ -10,8 +10,39 @@ use xai_grok_shell::env::GrokBuildEnvironment;
 use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
+
+/// Official npm package (upstream Grok Build).
+const NPM_PACKAGE_OFFICIAL: &str = "@xai-official/grok";
+/// Fork npm package (this repo's thin installer).
+const NPM_PACKAGE_FORK: &str = "@ruelya/grok-build";
+/// Official GitHub Releases repo (shared/private-ish artifact host).
+const GH_RELEASE_REPO_OFFICIAL: &str = "xai-org-shared/grok-build";
+/// Fork GitHub Releases repo (win/linux/mac-arm binaries).
+const GH_RELEASE_REPO_FORK: &str = "Ruelya/grok-build-rev";
+
+/// npm package used by `npm view` / `npm i -g` for the running binary.
+///
+/// Fork builds (`*-rev`) always use `@ruelya/grok-build` so auto-update never
+/// pulls `@xai-official/grok` over the fork.
+pub fn npm_package_name() -> &'static str {
+    if xai_grok_version::is_fork_build() {
+        NPM_PACKAGE_FORK
+    } else {
+        NPM_PACKAGE_OFFICIAL
+    }
+}
+
+/// GitHub Releases owner/repo for the `gh-release` installer path.
+pub fn gh_release_repo() -> &'static str {
+    if xai_grok_version::is_fork_build() {
+        GH_RELEASE_REPO_FORK
+    } else {
+        GH_RELEASE_REPO_OFFICIAL
+    }
+}
+
+/// Back-compat alias used by older call sites / tests.
+pub const GH_RELEASE_REPO: &str = GH_RELEASE_REPO_OFFICIAL;
 
 /// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching
 /// for binaries and origin-respecting no-cache for channel pointers.
@@ -136,10 +167,11 @@ pub async fn fetch_npm_version_for_test(
 }
 
 async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> {
+    let pkg = npm_package_name();
     let pkg_spec = if tag == "latest" {
-        NPM_PACKAGE.to_string()
+        pkg.to_string()
     } else {
-        format!("{}@{}", NPM_PACKAGE, tag)
+        format!("{}@{}", pkg, tag)
     };
     let mut args = vec!["view", &pkg_spec, "version", "--json"];
     let registry_flag;
@@ -188,11 +220,12 @@ pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
 }
 
 async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
+    let repo = gh_release_repo();
     let mut args = vec![
         "release",
         "list",
         "--repo",
-        GH_RELEASE_REPO,
+        repo,
         "--limit",
         "1",
         "--exclude-drafts",
@@ -219,7 +252,7 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
     // Tags are formatted as "v0.1.141", strip the leading "v"
     let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
     if version.is_empty() {
-        anyhow::bail!("No releases found in {}", GH_RELEASE_REPO);
+        anyhow::bail!("No releases found in {}", repo);
     }
     Ok(version)
 }
@@ -488,7 +521,14 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
 /// for correctness. On slow or unreachable networks the timeout fires and we
 /// return `None`; the label will populate on the next successful TTL check
 /// (~30 min). This keeps startup and post-install paths fast.
+///
+/// Fork builds never query the official x.ai / GCS channel pointers — their
+/// channel label is fixed and version checks go through npm
+/// (`@ruelya/grok-build`).
 pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
+    if xai_grok_version::is_fork_build() {
+        return None;
+    }
     tokio::time::timeout(Duration::from_millis(500), async {
         for base in CLI_BASE_URLS {
             if let Ok(v) = fetch_gcs_channel_pointer("stable", base).await {
@@ -499,6 +539,54 @@ pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
     })
     .await
     .unwrap_or(None)
+}
+
+/// Strip the fork branding suffix so npm package versions (plain `1.0.1`)
+/// compare cleanly against compiled-in `1.0.1-rev`.
+pub fn strip_fork_version_suffix(version: &str) -> String {
+    let v = version.trim();
+    if let Some(base) = v.strip_suffix("-rev") {
+        return base.to_string();
+    }
+    if let Some(base) = v.strip_suffix("+rev") {
+        return base.to_string();
+    }
+    // e.g. "1.0.1-rev (abc1234)" display forms — take first token then strip.
+    let token = v.split_whitespace().next().unwrap_or(v);
+    if let Some(base) = token.strip_suffix("-rev") {
+        return base.to_string();
+    }
+    if let Some(base) = token.strip_suffix("+rev") {
+        return base.to_string();
+    }
+    token.to_string()
+}
+
+/// Version used when deciding whether an update is available.
+///
+/// For fork builds prefer `~/.grok/fork-install.json` → `packageVersion`
+/// (written by the npm thin installer). That tracks the published npm release
+/// even when the binary still reports a generic `1.0.0-rev` compile stamp.
+/// Falls back to the compiled-in version with the `-rev` suffix stripped.
+pub fn version_for_update_check() -> String {
+    if xai_grok_version::is_fork_build() {
+        if let Some(v) = read_fork_install_package_version() {
+            return strip_fork_version_suffix(&v);
+        }
+        return strip_fork_version_suffix(&get_installed_grok_version());
+    }
+    get_installed_grok_version()
+}
+
+fn read_fork_install_package_version() -> Option<String> {
+    let path = grok_home().join("fork-install.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("packageVersion")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Read the cached stable version from `~/.grok/version.json` (sync, for display).
@@ -595,6 +683,26 @@ mod tests {
             !v.is_fresh(now, Duration::from_secs(30)),
             "Future timestamp must not be considered fresh (clock-skew guard)."
         );
+    }
+
+    #[test]
+    fn strip_fork_version_suffix_matrix() {
+        assert_eq!(strip_fork_version_suffix("1.0.1-rev"), "1.0.1");
+        assert_eq!(strip_fork_version_suffix("1.0.1+rev"), "1.0.1");
+        assert_eq!(strip_fork_version_suffix("1.0.1-rev (abc)"), "1.0.1");
+        assert_eq!(strip_fork_version_suffix("1.0.1"), "1.0.1");
+        assert_eq!(strip_fork_version_suffix("0.2.5-alpha.1"), "0.2.5-alpha.1");
+    }
+
+    #[test]
+    fn npm_package_name_matches_build_identity() {
+        if xai_grok_version::is_fork_build() {
+            assert_eq!(npm_package_name(), "@ruelya/grok-build");
+            assert_eq!(gh_release_repo(), "Ruelya/grok-build-rev");
+        } else {
+            assert_eq!(npm_package_name(), "@xai-official/grok");
+            assert_eq!(gh_release_repo(), "xai-org-shared/grok-build");
+        }
     }
 
     /// Disk-version probe: parsing the version out of the managed install's

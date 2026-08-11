@@ -13,7 +13,8 @@ Version stamp uses a **`-rev`** suffix, e.g. `1.0.0-rev (abc1234) [stable]`. The
 
 ### Install
 
-Native binaries: Windows x64, Linux x64, macOS arm64 (from GitHub Releases). Intel macOS not shipped.
+Native binaries (GitHub Releases): Windows x64, Linux x64, Linux arm64, macOS arm64. Intel macOS not shipped.
+Updates: `grok update` / auto-update use npm package `@ruelya/grok-build` (official x.ai CDN blocked).
 
 
 Replaces the official client at `~/.grok/bin/grok`.
@@ -24,13 +25,12 @@ grok --version                           # expect …-rev (…) [stable]
 npx grok-build restore                   # restore previous binary from backup
 ```
 
-| Platform key | Binary path in package |
-|--------------|------------------------|
-| `win32-x64` | `artifacts/bin/win32-x64/grok.exe` |
-| `darwin-arm64` | `artifacts/bin/darwin-arm64/grok` |
-| `darwin-x64` | `artifacts/bin/darwin-x64/grok` |
-| `linux-x64` | `artifacts/bin/linux-x64/grok` |
-| `linux-arm64` | `artifacts/bin/linux-arm64/grok` |
+| Platform key | Release asset |
+|--------------|---------------|
+| `win32-x64` | `grok-win32-x64.exe` |
+| `linux-x64` | `grok-linux-x64` |
+| `linux-arm64` | `grok-linux-arm64` |
+| `darwin-arm64` | `grok-darwin-arm64` |
 
 ```bash
 bash scripts/stage-binaries.sh win32-x64 ./target/release/xai-grok-pager.exe
@@ -267,6 +267,9 @@ auto_sync_catalog = true     # refresh models.dev on sync
 
 版本号带 **`-rev`** 后缀，通道标签固定为 **`[stable]`**，与官方 stable 产品线对齐。
 
+原生二进制（GitHub Releases）：Windows x64、Linux x64、Linux arm64、macOS arm64。不提供 Intel macOS。
+更新：`grok update` / 自动更新走 npm 包 `@ruelya/grok-build`（官方 x.ai CDN 已屏蔽）。
+
 ### 安装
 
 安装后会替换官方客户端路径 `~/.grok/bin/grok`。
@@ -277,13 +280,12 @@ grok --version                           # 期望 …-rev (…) [stable]
 npx grok-build restore                   # 从备份恢复上一份二进制
 ```
 
-| 平台键 | 包内二进制路径 |
-|--------|----------------|
-| `win32-x64` | `artifacts/bin/win32-x64/grok.exe` |
-| `darwin-arm64` | `artifacts/bin/darwin-arm64/grok` |
-| `darwin-x64` | `artifacts/bin/darwin-x64/grok` |
-| `linux-x64` | `artifacts/bin/linux-x64/grok` |
-| `linux-arm64` | `artifacts/bin/linux-arm64/grok` |
+| 平台键 | Release 资源 |
+|--------|--------------|
+| `win32-x64` | `grok-win32-x64.exe` |
+| `linux-x64` | `grok-linux-x64` |
+| `linux-arm64` | `grok-linux-arm64` |
+| `darwin-arm64` | `grok-darwin-arm64` |
 
 ```bash
 bash scripts/stage-binaries.sh win32-x64 ./target/release/xai-grok-pager.exe

@@ -1,5 +1,6 @@
 # Thin npm publish only (no compile).
-# Assumes GitHub Release v${version} already has the three binaries.
+# Assumes GitHub Release v${version} already has the four binaries:
+#   grok-win32-x64.exe, grok-linux-x64, grok-linux-arm64, grok-darwin-arm64
 # Auth: NPM_TOKEN (Automation). Provenance via OIDC when available.
 
 name: release-npm
@@ -39,7 +40,7 @@ jobs:
           set -euo pipefail
           BASE="https://github.com/${{ github.repository }}/releases/download/v${VER}"
           # Verify release assets exist
-          for need in grok-win32-x64.exe grok-linux-x64 grok-darwin-arm64; do
+          for need in grok-win32-x64.exe grok-linux-x64 grok-linux-arm64 grok-darwin-arm64; do
             code=$(curl -sS -o /dev/null -w '%{http_code}' -L -r 0-0 "${BASE}/${need}" || true)
             echo "$need → HTTP $code"
             if [[ "$code" != "200" && "$code" != "206" ]]; then
