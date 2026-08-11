@@ -18,6 +18,7 @@ on:
       - crates/codegen/xai-grok-update/**
       - Cargo.toml
       - Cargo.lock
+      - .cargo/config.toml
       - third_party/async-openai/**
       - .github/workflows/build.yml
 
