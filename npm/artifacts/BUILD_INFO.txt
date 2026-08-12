@@ -1,8 +1,1 @@
-package: @ruelya/grok-build
-version: 1.0.1
-git: 44d50ed7af1aeafd809a631437327b881d9263f1
-release: https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1
-2026-08-10T02:21:58Z
--rw-r--r-- 1 pc 197609 166776688  8月 10 10:21 ../dist-release/grok-darwin-arm64
--rw-r--r-- 1 pc 197609 206385512  8月 10 10:21 ../dist-release/grok-linux-x64
--rwxr-xr-x 1 pc 197609 136745984  8月 10 10:21 ../dist-release/grok-win32-x64.exe
+""product=1.0.1-rev"n"""upstream=1.0.1"n"""release=https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1-rev"n"

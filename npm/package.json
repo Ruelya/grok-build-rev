@@ -1,7 +1,7 @@
 {
   "name": "@ruelya/grok-build",
-  "version": "1.0.1",
-  "description": "Grok Build fork (rev). Thin npm installer — downloads native binary from GitHub Releases.",
+  "version": "1.0.1-rev",
+  "description": "Grok Build fork. Product version tracks upstream (currently 1.0.1-rev). Thin installer downloads from GitHub Releases.",
   "type": "module",
   "bin": {
     "grok": "bin/grok.mjs",
@@ -48,5 +48,5 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "forkReleaseBase": "https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1"
+  "forkReleaseBase": "https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.1-rev"
 }
