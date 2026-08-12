@@ -84,19 +84,26 @@ jobs:
             echo "::error::Missing secret NPM_TOKEN (npm Automation token required for agent-driven release)"
             exit 1
           fi
+          VER=$(node -p "require('./package.json').version")
+          # Prerelease versions (e.g. 1.0.1-rev) require an explicit dist-tag.
+          # Publish as `latest` so `npm i -g @ruelya/grok-build` picks them up.
+          EXTRA_TAG=()
+          if [[ "$VER" == *-* ]]; then
+            EXTRA_TAG=(--tag latest)
+            echo "prerelease $VER → --tag latest"
+          fi
           # --provenance needs OIDC; try with, fall back without if token path
           set +e
-          out=$(npm publish --access public --provenance 2>&1)
+          out=$(npm publish --access public --provenance "${EXTRA_TAG[@]}" 2>&1)
           code=$?
           set -e
           echo "$out"
           if [[ $code -ne 0 ]]; then
             if echo "$out" | grep -qiE 'provenance|OIDC|id-token'; then
               echo "retry without --provenance"
-              npm publish --access public
+              npm publish --access public "${EXTRA_TAG[@]}"
             else
               exit "$code"
             fi
           fi
-          VER=$(node -p "require('./package.json').version")
           echo "Published @ruelya/grok-build@$VER"
