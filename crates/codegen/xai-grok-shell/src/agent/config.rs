@@ -49,6 +49,7 @@ pub(crate) fn default_agent_type() -> String {
 pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
 /// Default base URL for the public xAI API.
 pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
+const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.
 ///
 /// Serde `untagged`: accepts a string or an array in TOML/JSON.
@@ -2550,6 +2551,14 @@ impl Config {
                 .max_retries
                 .or(remote.and_then(|s| s.max_retries))
                 .map_or(Policy::DEFAULT_MAX_RETRIES, Policy::clamp_max_retries),
+            window_tokens: self
+                .doom_loop_recovery
+                .window_tokens
+                .or(remote.and_then(|s| s.window_tokens))
+                .map_or(
+                    Policy::DEFAULT_RECOVERY_WINDOW_TOKENS,
+                    Policy::clamp_window_tokens,
+                ),
         })
     }
     /// Automatic worktree GC policy. Precedence: env kill/dry-run >
@@ -5200,6 +5209,23 @@ pub(crate) fn resolve_chat_state_auth_type(
         .map(|r| r.auth_type)
         .unwrap_or(fallback)
 }
+/// Selects xAI-only Responses extensions for trusted backend-search routes.
+///
+/// Third-party Responses providers reject `no_inline_citations`, so it must stay
+/// on a trusted first-party route and apply only to models with backend search.
+pub(crate) fn response_include_extensions(
+    supports_backend_search: bool,
+    api_backend: &ApiBackend,
+    base_url: &str,
+) -> Vec<String> {
+    let is_trusted_route = crate::util::is_trusted_cli_chat_proxy_url(base_url)
+        || crate::util::is_trusted_xai_https_url(base_url);
+    if supports_backend_search && api_backend == &ApiBackend::Responses && is_trusted_route {
+        vec![NO_INLINE_CITATIONS_RESPONSE_INCLUDE.to_owned()]
+    } else {
+        Vec::new()
+    }
+}
 pub(crate) fn sampling_config_for_model(
     model: &ModelEntry,
     credentials: ResolvedCredentials,
@@ -5220,6 +5246,11 @@ pub(crate) fn sampling_config_for_model(
         &credentials.base_url,
     );
     let api_backend = info.api_backend.clone();
+    let extra_response_includes = response_include_extensions(
+        info.supports_backend_search,
+        &api_backend,
+        &credentials.base_url,
+    );
     SamplerConfig {
         api_key: credentials.api_key,
         model: model_name,
@@ -5230,6 +5261,7 @@ pub(crate) fn sampling_config_for_model(
         api_backend,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
+        extra_response_includes,
         query_params: info.query_params.clone(),
         env_http_headers: info.env_http_headers.clone(),
         context_window: info.context_window.get(),
