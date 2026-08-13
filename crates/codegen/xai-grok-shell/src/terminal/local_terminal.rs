@@ -104,16 +104,22 @@ impl AsyncTerminalRunner for LocalTerminalRunner {
             c
         };
         #[cfg(not(unix))]
-        let mut cmd = {
+        let (mut cmd, privileged_env) = {
             let inv = xai_grok_config::shell::shell_command_argv(&request.command);
             let mut c = Command::new(inv.program);
             c.args(&inv.args).envs(inv.env);
-            c
+            (c, inv.privileged_env)
         };
         cmd.current_dir(&request.cwd)
             .envs(&request.env)
-            .envs(crate::terminal::pager_env())
-            .stdin(Stdio::null())
+            .envs(crate::terminal::pager_env());
+        #[cfg(not(unix))]
+        {
+            // Staged Git Bash script body — after request env so it cannot
+            // be overwritten by a user-supplied GROK_INTERNAL_SHELL_* var.
+            cmd.envs(privileged_env);
+        }
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

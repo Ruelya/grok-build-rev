@@ -3233,12 +3233,13 @@ fn spawn_shell_command(
     };
 
     #[cfg(not(unix))]
+    let inv = xai_grok_config::shell::shell_command_argv(command);
+    #[cfg(not(unix))]
     let mut build_cmd = |with_breakaway: bool| {
         use windows::Win32::System::Threading::{
             CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
         };
 
-        let inv = xai_grok_config::shell::shell_command_argv(command);
         let mut cmd = tokio::process::Command::new(&inv.program);
         cmd.args(&inv.args)
             .current_dir(cwd)
@@ -3248,15 +3249,18 @@ fn spawn_shell_command(
             .kill_on_drop(true);
 
         // Policy base first (cleared + rebuilt only when a policy is active), then
-        // the shell-invocation env, the filtered request env, pager vars, and the
-        // agent marker last. Mirrors the unix ordering in `apply_child_env`;
-        // `inv.env` is grok's trusted shell setup, so it is not filtered.
+        // the shell-invocation env, the filtered request env, pager vars, the
+        // agent marker, and the staged Git Bash script last. Mirrors the unix
+        // ordering in `apply_child_env`; `inv.env` is grok's trusted shell setup,
+        // so it is not filtered. `privileged_env` must win over request env so a
+        // user-supplied GROK_INTERNAL_SHELL_* cannot replace the staged script.
         let active_policy = shell_env_policy.filter(|p| !p.is_noop());
         crate::util::shell_env_policy::install_policy_base_env(&mut cmd, active_policy);
-        cmd.envs(inv.env);
+        cmd.envs(inv.env.iter().cloned());
         layer_request_env(&mut cmd, env, active_policy);
         cmd.envs(crate::util::pager_env());
         crate::util::apply_grok_agent_marker(&mut cmd);
+        cmd.envs(inv.privileged_env.iter().cloned());
 
         // Set creation flags inline rather than via crate::util::detach_command
         // + new_process_group: tokio's creation_flags is a SET, not OR, so
