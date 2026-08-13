@@ -313,9 +313,16 @@ pub const GIT_BASH_SCRIPT_ENV: &str = "GROK_INTERNAL_SHELL_SCRIPT";
 
 /// `-c` payload. Contains **no user text** — MSYS command-line parsing
 /// therefore cannot rewrite backslashes in the script.
+///
+/// The body is copied into a namespaced shell variable (not `_s`, which
+/// user scripts often read) and the env name is unset so children do not
+/// inherit the script. `eval` then runs the copy.
 #[cfg(not(unix))]
-const GIT_BASH_EVAL_WRAPPER: &str =
-    r#"_s="$GROK_INTERNAL_SHELL_SCRIPT"; unset GROK_INTERNAL_SHELL_SCRIPT; eval "$_s""#;
+const GIT_BASH_EVAL_WRAPPER: &str = concat!(
+    r#"__GROK_INTERNAL_EVAL_BODY="$GROK_INTERNAL_SHELL_SCRIPT"; "#,
+    r#"unset GROK_INTERNAL_SHELL_SCRIPT; "#,
+    r#"eval "$__GROK_INTERNAL_EVAL_BODY""#,
+);
 
 /// Owned UTF-8 defaults injected into every Windows shell child.
 #[cfg(not(unix))]
@@ -736,16 +743,47 @@ mod tests {
         inv.privileged_env.iter().any(|(k, v)| k == key && v == val)
     }
 
+    #[cfg(not(unix))]
+    fn gitbash_shell() -> WindowsShell {
+        WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into())
+    }
+
+    #[cfg(not(unix))]
+    fn run_invocation(inv: &ShellInvocation) -> std::process::Output {
+        let mut cmd = std::process::Command::new(&inv.program);
+        xai_tty_utils::detach_std_command(&mut cmd);
+        cmd.args(&inv.args)
+            .envs(inv.env.iter().cloned())
+            .envs(inv.privileged_env.iter().cloned())
+            .output()
+            .unwrap_or_else(|e| panic!("spawn {} failed: {e}", inv.program))
+    }
+
+    #[cfg(not(unix))]
+    fn find_powershell_family() -> Option<WindowsShell> {
+        if let Ok(output) = {
+            let mut cmd = std::process::Command::new("where");
+            xai_tty_utils::detach_std_command(&mut cmd);
+            cmd.arg("pwsh.exe").stdin(std::process::Stdio::null());
+            cmd.output()
+        } && output.status.success()
+        {
+            return Some(WindowsShell::Pwsh);
+        }
+        let ps5 = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        if std::path::Path::new(ps5).exists() {
+            return Some(WindowsShell::PowerShell);
+        }
+        None
+    }
+
     /// Git Bash must not put the script body (or any `\\`) in argv. The
     /// exact user bytes go in `GROK_INTERNAL_SHELL_SCRIPT`.
     #[cfg(not(unix))]
     #[test]
     fn gitbash_command_is_staged_in_env_not_argv() {
         let command = r#"python -c 's = "\\"; print(len(s))'"#;
-        let inv = invocation_for(
-            &WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into()),
-            command,
-        );
+        let inv = invocation_for(&gitbash_shell(), command);
         assert_eq!(inv.args, ["-c", GIT_BASH_EVAL_WRAPPER]);
         assert!(
             !inv.args.iter().any(|a| a.contains('\\')),
@@ -760,15 +798,66 @@ mod tests {
         assert!(inv.env.iter().all(|(k, _)| k != GIT_BASH_SCRIPT_ENV));
     }
 
+    /// Wrapper must not bind the common scratch name `_s` (Cursor review).
+    #[cfg(not(unix))]
+    #[test]
+    fn gitbash_wrapper_does_not_bind_s() {
+        assert!(
+            !GIT_BASH_EVAL_WRAPPER.contains("$_s") && !GIT_BASH_EVAL_WRAPPER.contains("_s="),
+            "wrapper still uses _s: {GIT_BASH_EVAL_WRAPPER}"
+        );
+        assert!(
+            GIT_BASH_EVAL_WRAPPER.contains("__GROK_INTERNAL_EVAL_BODY"),
+            "expected namespaced body var: {GIT_BASH_EVAL_WRAPPER}"
+        );
+    }
+
+    /// PowerShell family keeps the user body as `-Command` (no MSYS fold).
+    #[cfg(not(unix))]
+    #[test]
+    fn powershell_family_puts_exact_body_on_command_argv() {
+        let command = r#"Write-Output '/nologo'; Write-Output ('\\').Length"#;
+        for shell in [WindowsShell::Pwsh, WindowsShell::PowerShell] {
+            let inv = invocation_for(&shell, command);
+            assert_eq!(inv.args.last().map(String::as_str), Some(command));
+            assert!(inv.args.windows(2).any(|w| w[0] == "-Command"));
+            assert!(inv.privileged_env.is_empty());
+            assert!(!env_has(&inv.env, "MSYS_NO_PATHCONV", "1"));
+        }
+    }
+
+    /// `/flag` tokens are represented exactly in the Git Bash staged body
+    /// and the builder still installs the MSYS path-conversion guards.
+    #[cfg(not(unix))]
+    #[test]
+    fn gitbash_flag_token_stays_in_staged_body() {
+        let command = "printf '%s' '/nologo'";
+        let inv = invocation_for(&gitbash_shell(), command);
+        assert!(privileged_has(&inv, GIT_BASH_SCRIPT_ENV, command));
+        assert!(env_has(&inv.env, "MSYS_NO_PATHCONV", "1"));
+        assert!(env_has(&inv.env, "MSYS2_ARG_CONV_EXCL", "*"));
+        assert!(
+            !inv.args.iter().any(|a| a.contains("/nologo")),
+            "user /flag must not sit on argv: {:?}",
+            inv.args
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn chain_operator_per_windows_family() {
+        assert!(gitbash_shell().supports_chain_operator());
+        assert!(WindowsShell::Pwsh.supports_chain_operator());
+        assert!(!WindowsShell::PowerShell.supports_chain_operator());
+        assert!(!WindowsShell::Cmd.supports_chain_operator());
+    }
+
     /// A long command still uses the env-var path — not a temp file.
     #[cfg(not(unix))]
     #[test]
     fn gitbash_long_command_stays_in_env() {
         let command = format!(r#"x='\\'; printf '%s' "${{#x}}"{}"#, "a".repeat(12_000));
-        let inv = invocation_for(
-            &WindowsShell::GitBash("C:\\Program Files\\Git\\bin\\bash.exe".into()),
-            &command,
-        );
+        let inv = invocation_for(&gitbash_shell(), &command);
         assert_eq!(inv.args, ["-c", GIT_BASH_EVAL_WRAPPER]);
         assert!(privileged_has(&inv, GIT_BASH_SCRIPT_ENV, &command));
     }
@@ -779,19 +868,12 @@ mod tests {
     #[test]
     fn git_bash_preserves_double_backslash_in_single_quotes() {
         let Some(bash) = find_git_bash() else {
+            eprintln!("skip: Git Bash bash.exe not found on this host");
             return;
         };
         let command = r#"x='\\'; printf '%s' "${#x}""#;
         let inv = invocation_for(&WindowsShell::GitBash(bash), command);
-        let output = {
-            let mut cmd = std::process::Command::new(&inv.program);
-            xai_tty_utils::detach_std_command(&mut cmd);
-            cmd.args(&inv.args)
-                .envs(inv.env.iter().cloned())
-                .envs(inv.privileged_env.iter().cloned())
-                .output()
-                .expect("spawn git bash")
-        };
+        let output = run_invocation(&inv);
         assert!(
             output.status.success(),
             "git bash failed: status={:?} stderr={}",
@@ -803,6 +885,75 @@ mod tests {
             "2",
             "expected two backslashes to survive into bash; stderr={}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Live Git Bash: `/nologo` must not be rewritten as a Windows path.
+    #[cfg(not(unix))]
+    #[test]
+    fn git_bash_passes_slash_flag_through() {
+        let Some(bash) = find_git_bash() else {
+            eprintln!("skip: Git Bash bash.exe not found on this host");
+            return;
+        };
+        let command = "printf '%s' '/nologo'";
+        let inv = invocation_for(&WindowsShell::GitBash(bash), command);
+        let output = run_invocation(&inv);
+        assert!(
+            output.status.success(),
+            "git bash /flag failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "/nologo");
+    }
+
+    /// Live Git Bash: `$_s` must stay unset (wrapper must not leak `_s`).
+    #[cfg(not(unix))]
+    #[test]
+    fn git_bash_user_script_does_not_see_s() {
+        let Some(bash) = find_git_bash() else {
+            eprintln!("skip: Git Bash bash.exe not found on this host");
+            return;
+        };
+        let command = r#"printf '%s' "${_s-UNSET}""#;
+        let inv = invocation_for(&WindowsShell::GitBash(bash), command);
+        let output = run_invocation(&inv);
+        assert!(
+            output.status.success(),
+            "git bash $_s probe failed: {:?}",
+            output.status
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "UNSET");
+    }
+
+    /// Live PowerShell family: `'\\'` length is 2 and `/nologo` is echoed.
+    #[cfg(not(unix))]
+    #[test]
+    fn powershell_family_live_backslash_and_slash_flag() {
+        let Some(shell) = find_powershell_family() else {
+            eprintln!("skip: pwsh.exe / powershell.exe not found on this host");
+            return;
+        };
+        let command = r#"Write-Output ('\\').Length; Write-Output '/nologo'"#;
+        let inv = invocation_for(&shell, command);
+        let output = run_invocation(&inv);
+        assert!(
+            output.status.success(),
+            "{shell:?} failed: status={:?} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let compact: String = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            compact.contains('2') && compact.contains("/nologo"),
+            "{shell:?} unexpected stdout: {stdout:?}"
         );
     }
 }
