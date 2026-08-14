@@ -241,7 +241,7 @@ impl SessionActor {
         // (not on failure/empty/cancel) so auto can retry later for this turn if needed.
         let clear_in_flight = || self.recap_in_flight.set(false);
 
-        let setup = match self.prepare_side_call().await {
+        let setup = match self.prepare_recap_side_call().await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: failed to prepare sampling client");

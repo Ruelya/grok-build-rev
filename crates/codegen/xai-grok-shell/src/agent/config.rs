@@ -1044,7 +1044,7 @@ pub struct ModelsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_summary: Option<String>,
     /// Optional dedicated model for session recap (`/recap` + auto recap).
-    /// When set, wins over the OAuth-preferred official built-in model.
+    /// When set, wins over the current session model (official default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recap: Option<String>,
     /// Vision model used to transcribe user-supplied
@@ -1630,8 +1630,8 @@ pub struct Config {
     /// (`default_session_summary_model`) when unset; see `ModelOverrideConfig::resolve`.
     #[serde(skip)]
     pub session_summary_model: Option<String>,
-    /// Optional recap model override from `[models] recap`. `None` ⇒ OAuth
-    /// prefers the official built-in model; without OAuth, the session model.
+    /// Optional recap model override from `[models] recap`. `None` ⇒ current
+    /// session model (official default).
     #[serde(skip)]
     pub recap_model: Option<String>,
     /// Image describe model (`grok-build` default via `ModelOverrideConfig::resolve`).
@@ -4037,7 +4037,9 @@ pub struct ModelEntryConfig {
     /// flag should leave this unset to avoid request errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
-    /// When true, main Responses turns auto-attach a session-stable `prompt_cache_key`.
+    /// Retained for config compatibility. Official Responses mapping always
+    /// sends `prompt_cache_key` (falls back to `x_grok_conv_id`); this flag
+    /// no longer changes the wire.
     #[serde(default, skip_serializing_if = "is_false")]
     pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to
@@ -4111,7 +4113,9 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
-    /// When true, main Responses turns auto-attach a session-stable `prompt_cache_key`.
+    /// Retained for config compatibility. Official Responses mapping always
+    /// sends `prompt_cache_key` (falls back to `x_grok_conv_id`); this flag
+    /// no longer changes the wire.
     pub auto_prompt_cache_key: Option<bool>,
 }
 impl ConfigModelOverride {
@@ -4297,8 +4301,8 @@ pub struct ModelInfo {
     pub show_model_fingerprint: bool,
     /// When `Some(true)`, the sampler injects `stream_tool_calls: true`
     pub stream_tool_calls: Option<bool>,
-    /// When true, main Responses turns auto-attach a stable session-derived
-    /// `prompt_cache_key` (see `xai_grok_sampling_types::resolve_main_auto_prompt_cache_key`).
+    /// Retained for config compatibility. Official Responses mapping always
+    /// sends `prompt_cache_key`; this flag no longer changes the wire.
     #[serde(default, skip_serializing_if = "is_false")]
     pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to

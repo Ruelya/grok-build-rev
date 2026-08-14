@@ -1,9 +1,9 @@
-//! Stable `prompt_cache_key` derivation for main turns and recap.
+//! Stable `prompt_cache_key` derivation for main turns and recap model pick.
 //!
-//! Pure helpers so unit tests need no TUI / HTTP. Main and recap keys are both
-//! derived from the session id but are intentionally **not** identical: recap
-//! must not collide with the main-turn sticky key (upstream historically set
-//! recap to the raw session id; this fork differs by design).
+//! Official Responses mapping always sends a key (falls back to
+//! `x_grok_conv_id`). Recap / `/btw` stamp the **parent session id** so they
+//! share that prefix cache. `derive_recap_prompt_cache_key` is a reserved
+//! isolated derivation and is not used on the wire.
 
 use crate::ApiBackend;
 
@@ -14,8 +14,8 @@ pub fn derive_main_prompt_cache_key(session_id: &str) -> String {
     session_id.to_string()
 }
 
-/// Recap `prompt_cache_key`: derived from the session id but never equal to
-/// [`derive_main_prompt_cache_key`].
+/// Isolated recap `prompt_cache_key` (not sent on the wire; recap uses the
+/// parent session id, same as official).
 pub fn derive_recap_prompt_cache_key(session_id: &str) -> String {
     format!("xai-recap-{session_id}")
 }
@@ -36,8 +36,9 @@ pub fn resolve_main_auto_prompt_cache_key(
 
 /// Resolve which model slug recap should use.
 ///
-/// Precedence: non-empty `override_model` → when OAuth is present, the official
-/// built-in recap model → otherwise the active session model.
+/// Precedence: non-empty `override_model` → non-empty `official_recap_model`
+/// when OAuth is present → otherwise the active session model. Official Grok
+/// Build has no dedicated recap model; pass `official_recap_model` as `""`.
 pub fn resolve_recap_model_id(
     override_model: Option<&str>,
     oauth_logged_in: bool,

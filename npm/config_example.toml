@@ -2,7 +2,7 @@
 # Grok Build — config_example.toml
 # Copy fields you need into:  %USERPROFILE%\.grok\config.toml  (or $GROK_HOME)
 # All keys are optional unless noted. Comments document accepted values.
-# Fork extras (openai_responses, toolset.style, auto_prompt_cache_key, recap)
+# Fork extras (openai_responses, toolset.style, recap model)
 # are marked  # [fork]
 # =============================================================================
 
@@ -92,7 +92,7 @@ combine_queued_prompts = false
 [models]
 default = "grok-4.5"
 default_reasoning_effort = "high"   # none | low | medium | high | …
-# recap = "grok-4.5"                 # [fork] dedicated /recap model
+# recap = "cheap-summary"            # [fork] /recap model; unset = session model
 # web_search = "…"
 # session_summary = "…"
 # image_description = "…"
@@ -129,7 +129,7 @@ default_reasoning_effort = "high"   # none | low | medium | high | …
 #              "openai_chat_completions" | "openai_responses" | "anthropic_messages"
 #   See docs/api-backends.md · examples/config.api-backends.toml
 # api_backend = "openai_responses"
-# auto_prompt_cache_key = true        # [fork] main-turn pck (Responses family only)
+# auto_prompt_cache_key = true        # absorbed: Responses already send pck; no-op
 # temperature = 1.0
 # top_p = 1.0
 # max_completion_tokens = 16384
@@ -163,7 +163,6 @@ default_reasoning_effort = "high"   # none | low | medium | high | …
 # base_url = "https://your-gateway/v1"
 # api_key = "…"
 # api_backend = "openai_responses"    # [fork] loose Responses parse
-# auto_prompt_cache_key = true
 # context_window = 200000
 # reasoning_effort = "high"
 #

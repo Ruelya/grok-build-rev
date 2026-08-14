@@ -178,23 +178,21 @@ grok-build-orchestrator = true
 
 ### Prompt cache key & recap model
 
-#### `auto_prompt_cache_key` (per model)
+#### `auto_prompt_cache_key` (absorbed)
 
-**Effect:** On **Responses** backends (`responses` / `openai_responses`), each main turn automatically sends a **session-stable** `prompt_cache_key`. Providers that support prompt caching can reuse KV for the stable prefix of the conversation → lower latency and cost on long sessions. **Off by default.** Chat Completions / Messages ignore this flag.
+**Status:** Absorbed by official Grok Build (product 1.0.3). The per-model flag is kept for config compatibility and does **not** change the wire.
 
-**Config** (on a `[model.*]` entry):
+**Expected behavior:** On Responses backends (`responses` / `openai_responses`), every request sends `prompt_cache_key`. If unset, it defaults to `x_grok_conv_id` (main turns: the session id). Recap and `/btw` send the **parent session id** so they share that prefix cache. Chat Completions / Messages still do not forward the field.
 
 ```toml
-[model.sol]
-api_backend = "openai_responses"
-auto_prompt_cache_key = true
+# No longer required — Responses already send prompt_cache_key.
+# [model.sol]
+# auto_prompt_cache_key = true
 ```
-
-Keys are derived from the session (main vs recap use different derivations so caches do not collide).
 
 #### Recap model (`[models] recap`)
 
-**Effect:** Session **recap** (`/recap` and automatic return-from-away recap) can run on a **cheaper / smaller** model than the main chat model. When unset, recap follows the OAuth-preferred official built-in. When set, your override wins.
+**Effect:** Session **recap** (`/recap` and automatic return-from-away recap) can run on a **cheaper / smaller** model than the main chat model. **Unset** → current session model (official default). **Set** → that catalog key or model id (own endpoint / credentials when the `[model.*]` entry has them). If the override cannot be resolved, recap falls back to the session model.
 
 **Config:**
 
@@ -253,7 +251,7 @@ auto_sync_catalog = true     # refresh models.dev on sync
 
 | File | Purpose |
 |------|---------|
-| `examples/config.api-backends.toml` | Loose backends + `auto_prompt_cache_key` |
+| `examples/config.api-backends.toml` | Loose backends + `[models] recap` |
 | `examples/config.usage-pricing.toml` | Cost modes / live display |
 | `examples/prices.custom.toml` | Custom $/1M rates |
 | `examples/usage-sync.toml` | WebDAV sync |
@@ -437,23 +435,21 @@ grok-build-orchestrator = true
 
 ### Prompt cache key 与 recap 模型
 
-#### `auto_prompt_cache_key`（按模型）
+#### `auto_prompt_cache_key`（已被官方吸收）
 
-**效用：** 在 **Responses** 后端（`responses` / `openai_responses`）上，每一主轮自动发送 **会话稳定** 的 `prompt_cache_key`。支持 prompt 缓存的提供商可复用对话稳定前缀的 KV → 长会话更低延迟与费用。**默认关闭。** Chat Completions / Messages 会忽略该标志。
+**状态：** 已被官方 Grok Build（product 1.0.3）吸收。按模型开关仍可写在配置里，**不再改变线上结果**。
 
-**配置**（写在某个 `[model.*]` 上）：
+**预期行为：** 在 Responses 后端（`responses` / `openai_responses`）上，每个请求都会带 `prompt_cache_key`。未显式设置时回退为 `x_grok_conv_id`（主轮即 session id）。Recap 与 `/btw` 发送 **父 session id**，以便共享该前缀缓存。Chat Completions / Messages 仍不转发该字段。
 
 ```toml
-[model.sol]
-api_backend = "openai_responses"
-auto_prompt_cache_key = true
+# 已不必设置 — Responses 默认就会带 prompt_cache_key。
+# [model.sol]
+# auto_prompt_cache_key = true
 ```
-
-key 由会话派生（主轮与 recap 使用不同派生，避免缓存互相污染）。
 
 #### Recap 模型（`[models] recap`）
 
-**效用：** 会话 **recap**（`/recap` 与离开再回时的自动 recap）可以跑在比主对话 **更便宜/更小** 的模型上。未设置时跟随 OAuth 偏好的官方内置；设置后以你的覆盖为准。
+**效用：** 会话 **recap**（`/recap` 与离开再回时的自动 recap）可以跑在比主对话 **更便宜/更小** 的模型上。**未设置** → 当前会话模型（与官方一致）。**设置** → 该目录键或模型 id（`[model.*]` 上的 endpoint / 凭据会一并使用）。覆盖无法解析时回退到会话模型。
 
 **配置：**
 
@@ -512,7 +508,7 @@ auto_sync_catalog = true     # 同步时刷新 models.dev
 
 | 文件 | 用途 |
 |------|------|
-| `examples/config.api-backends.toml` | 宽松 backend + `auto_prompt_cache_key` |
+| `examples/config.api-backends.toml` | 宽松 backend + `[models] recap` |
 | `examples/config.usage-pricing.toml` | 计费模式 / 实时显示 |
 | `examples/prices.custom.toml` | 自定义 $/1M |
 | `examples/usage-sync.toml` | WebDAV 同步 |

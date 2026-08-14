@@ -459,11 +459,20 @@ impl ModelsManager {
     }
 
     /// Optional `[models] recap` override for session recap model selection.
+    /// `None` ⇒ recap uses the current session model (official default).
     pub fn recap_model_override(&self) -> Option<String> {
         let cfg = self.inner.cfg.read();
         cfg.recap_model
             .clone()
             .or_else(|| cfg.models.recap.clone())
+    }
+
+    /// Test-only: set `[models] recap` / `Config.recap_model` together.
+    #[cfg(test)]
+    pub(crate) fn set_recap_model_override(&self, model: Option<String>) {
+        let mut cfg = self.inner.cfg.write();
+        cfg.recap_model = model.clone();
+        cfg.models.recap = model;
     }
 
     /// Does the current credential grant access to OAuth-only models?

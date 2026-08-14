@@ -105,6 +105,74 @@ impl SessionActor {
         })
     }
 
+    /// Recap setup: `[models] recap` when set and resolvable, otherwise the
+    /// session model (official default). Turn summary keeps
+    /// [`Self::prepare_side_call`].
+    pub(crate) async fn prepare_recap_side_call(&self) -> Result<SideCallSetup, acp::Error> {
+        let override_slug = self.models_manager.recap_model_override();
+        let session_model = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|c| c.model)
+            .unwrap_or_default();
+        let oauth_logged_in = self
+            .auth_manager
+            .as_ref()
+            .and_then(|am| am.current_or_expired())
+            .is_some_and(|a| a.is_session_auth());
+        // Official has no dedicated recap model; empty official slug ⇒ session.
+        let chosen = xai_grok_sampling_types::resolve_recap_model_id(
+            override_slug.as_deref(),
+            oauth_logged_in,
+            "",
+            &session_model,
+        );
+        if !chosen.is_empty() && chosen != session_model {
+            if let Some(setup) = self.try_prepare_aux_side_call(&chosen).await {
+                return Ok(setup);
+            }
+            tracing::warn!(
+                requested = %chosen,
+                "recap model override unavailable; using session model"
+            );
+        }
+        self.prepare_side_call().await
+    }
+
+    /// Catalog-routed aux sampler for a recap override slug. `None` ⇒ caller
+    /// falls back to the session client (missing creds / build failure).
+    async fn try_prepare_aux_side_call(&self, slug: &str) -> Option<SideCallSetup> {
+        let active_session_config = self.reconstruct_full_config().await;
+        let mut cfg = self.resolve_aux_sampler_config(slug).await?;
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut cfg,
+            &active_session_config,
+            self.client_identifier.clone(),
+            Some(self.max_retries),
+        );
+        let model = cfg.model.clone();
+        let context_window = cfg.context_window;
+        let reasoning_effort = cfg.reasoning_effort;
+        let client = xai_grok_sampler::SamplingClient::new(cfg)
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    slug,
+                    "recap aux sampler build failed; using session model"
+                )
+            })
+            .ok()?;
+        let strip_reasoning = client.api_backend().requires_reasoning_strip();
+        Some(SideCallSetup {
+            client,
+            strip_reasoning,
+            context_window,
+            model,
+            reasoning_effort,
+        })
+    }
+
     /// Build the cache-aligned request for a recap-style side-call via
     /// [`Self::parent_cached_request`]: main-turn tool + hosted-tool specs and
     /// matching reasoning effort so the prompt-cache prefix stays warm.

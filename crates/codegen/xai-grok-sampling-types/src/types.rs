@@ -1162,9 +1162,9 @@ pub struct SamplingConfig {
     /// API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
-    /// When true and [`ApiBackend::forwards_prompt_cache_key`] is true, main
-    /// turns auto-attach a stable session-derived [`ConversationRequest::prompt_cache_key`].
-    /// Per-model opt-in (default off).
+    /// Retained for config compatibility. Official Responses mapping always
+    /// sends [`ConversationRequest::prompt_cache_key`] (falls back to
+    /// `x_grok_conv_id`); this flag no longer changes the wire.
     ///
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

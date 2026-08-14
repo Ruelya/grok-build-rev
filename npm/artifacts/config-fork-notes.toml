@@ -48,16 +48,15 @@
 #
 # [model."proxy"]
 # api_backend = "openai_responses"
-# auto_prompt_cache_key = true
 #
-# --- Prompt cache key (opt-in; Responses family only) -------------------------
+# --- Prompt cache key (absorbed by official; Responses always send it) --------
 # [model."your-model-id"]
-# # auto_prompt_cache_key = true
+# # auto_prompt_cache_key = true   # no-op; kept for config compatibility
 #
 # --- Recap model (optional) ---------------------------------------------------
-# Override > OAuth official default > current session model
+# Unset = current session model. Set = catalog key / model id.
 # [models]
-# # recap = "grok-4.5"
+# # recap = "cheap-summary"
 #
 # <<< fork-fork-config-notes
 # =============================================================================

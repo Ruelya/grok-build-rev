@@ -1605,11 +1605,6 @@ async fn build_request_auto_prompt_cache_key_on_responses() {
     let expected = xai_grok_sampling_types::derive_main_prompt_cache_key(session);
     assert_eq!(r1.prompt_cache_key.as_deref(), Some(expected.as_str()));
     assert_eq!(r2.prompt_cache_key, r1.prompt_cache_key, "same session → same main key");
-    assert_ne!(
-        r1.prompt_cache_key.as_deref(),
-        Some(xai_grok_sampling_types::derive_recap_prompt_cache_key(session).as_str()),
-        "main key must differ from recap key"
-    );
 }
 
 #[tokio::test]

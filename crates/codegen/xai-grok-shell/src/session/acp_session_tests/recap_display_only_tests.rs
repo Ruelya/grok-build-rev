@@ -768,8 +768,8 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
     );
 }
 
-/// Recap wire shape: main-turn tools + `prompt_cache_key` = session id, so the
-/// request rides the parent turn's prefix cache instead of cold-prefilling.
+/// Recap wire shape: main-turn tools + `prompt_cache_key` = parent session id
+/// (official), so the request rides the parent turn's prefix cache.
 #[tokio::test(flavor = "current_thread")]
 async fn recap_request_rides_parent_prompt_cache() {
     use xai_grok_test_support::MockInferenceServer;
@@ -821,18 +821,15 @@ async fn recap_request_rides_parent_prompt_cache() {
 
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
             let session_id = actor.session_info.id.to_string();
-            let expected_recap_key =
-                xai_grok_sampling_types::derive_recap_prompt_cache_key(&session_id);
-            let expected_main_key =
-                xai_grok_sampling_types::derive_main_prompt_cache_key(&session_id);
             assert_eq!(
                 body["prompt_cache_key"].as_str(),
-                Some(expected_recap_key.as_str()),
-                "recap prompt_cache_key is session-derived but must differ from main"
+                Some(session_id.as_str()),
+                "prompt_cache_key must be the parent session id for sticky routing"
             );
-            assert_ne!(
-                expected_recap_key, expected_main_key,
-                "recap key must not equal main-turn key"
+            assert_eq!(
+                body["model"].as_str(),
+                Some("test"),
+                "unset [models] recap uses the session model"
             );
             let main_turn_specs =
                 actor.turn_base_tool_specs(&actor.prepare_tool_definitions().await);
@@ -842,6 +839,74 @@ async fn recap_request_rides_parent_prompt_cache() {
                 tools.len(),
                 main_turn_specs.len(),
                 "recap must send exactly the main turn's tool specs"
+            );
+        })
+        .await;
+}
+
+/// `[models] recap` routes the recap call to that catalog entry's model id.
+#[tokio::test(flavor = "current_thread")]
+async fn recap_request_uses_models_recap_override() {
+    use crate::agent::config::{ModelEntry, ModelInfo};
+    use xai_grok_sampling_types::ApiBackend;
+    use xai_grok_test_support::MockInferenceServer;
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _grx) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+
+            let server = MockInferenceServer::start().await.unwrap();
+            server.set_response("You asked about the borrow checker.");
+
+            let mut info = ModelInfo::fallback("fast-small-id");
+            info.base_url = server.url();
+            info.api_backend = ApiBackend::Responses;
+            actor.models_manager.insert_test_entry(
+                "cheap-summary",
+                ModelEntry {
+                    info,
+                    api_key: Some("test-key".into()),
+                    env_key: None,
+                    auth_provider: None,
+                    api_base_url: None,
+                },
+            );
+            actor
+                .models_manager
+                .set_recap_model_override(Some("cheap-summary".into()));
+
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("you are a coding agent"),
+                ConversationItem::user("explain the borrow checker"),
+                ConversationItem::assistant("it enforces shared-xor-mutable"),
+            ]);
+
+            actor.handle_recap(false).await;
+
+            assert!(
+                server.has_responses_request(),
+                "recap override must hit the catalog entry's endpoint"
+            );
+            let requests = server.requests();
+            let recap_req = requests
+                .iter()
+                .rev()
+                .find(|r| r.path.contains("responses"))
+                .expect("a responses request must be recorded");
+            let body = recap_req.body.as_ref().expect("recap body must be JSON");
+            assert_eq!(
+                body["model"].as_str(),
+                Some("fast-small-id"),
+                "[models] recap must send the override catalog entry's model id"
+            );
+            assert_eq!(
+                body["prompt_cache_key"].as_str(),
+                Some(actor.session_info.id.to_string().as_str()),
+                "override recap still stamps the parent session id"
             );
         })
         .await;

@@ -19,7 +19,6 @@ base_url = "https://your-gateway/v1"
 # api_key = "…"
 # env_key = "OPENAI_API_KEY"
 api_backend = "openai_responses"
-auto_prompt_cache_key = true
 context_window = 200000
 reasoning_effort = "high"
 
@@ -60,6 +59,7 @@ anthropic-version = "2023-06-01"
 # env_key = "OPENAI_API_KEY"
 # api_backend = "chat_completions"
 
-# Optional catalog default for picker:
+# Optional catalog default + cheaper recap model:
 # [models]
 # default = "sol"
+# recap = "cheap-chat"
