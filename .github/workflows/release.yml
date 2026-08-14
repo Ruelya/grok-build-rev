@@ -1,0 +1,128 @@
+# Create a GitHub Release from an existing `build` workflow run.
+# No compile, no npm — download CI artifacts and attach them as release assets.
+#
+# After `build.yml` succeeds:
+#   Actions → Release → Run workflow
+#     version: 1.0.3-rev
+#     run_id:  (empty = latest successful build on main)
+#
+# Then publish npm separately: Actions → release-npm → same version.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (tag vVERSION, e.g. 1.0.3-rev)"
+        required: true
+        type: string
+      run_id:
+        description: "build.yml run id (empty = latest successful build on this branch)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve build run
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RUN: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_RUN// }" ]]; then
+            RID="${INPUT_RUN// /}"
+          else
+            RID=$(gh run list -R "${{ github.repository }}" \
+              --workflow build.yml --branch "${{ github.ref_name }}" \
+              --status success --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty')
+            if [[ -z "$RID" ]]; then
+              echo "::error::No successful build.yml run on ${{ github.ref_name }}"
+              exit 1
+            fi
+          fi
+          echo "run_id=$RID" >> "$GITHUB_OUTPUT"
+          echo "Using build run $RID"
+          gh run view "$RID" -R "${{ github.repository }}" \
+            --json status,conclusion,headSha,url \
+            --jq '"status=\(.status) conclusion=\(.conclusion) sha=\(.headSha) url=\(.url)"'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.src.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+
+      - name: Check assets
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -la
+          for need in grok-win32-x64.exe grok-linux-x64 grok-linux-arm64 grok-darwin-arm64; do
+            test -f "$need"
+            SIZE=$(wc -c < "$need" | tr -d ' ')
+            echo "$need size=$SIZE"
+            if [[ "$SIZE" -lt 1000000 ]]; then
+              echo "::error::$need too small ($SIZE)"
+              exit 1
+            fi
+            chmod +x "$need" || true
+          done
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ inputs.version }}
+          RID: ${{ steps.src.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          TAG="v${VER}"
+          NOTES=$(mktemp)
+          cat > "$NOTES" <<EOF
+          ## grok-build-rev ${TAG}
+
+          Product version tracks official Grok Build as **${VER}**.
+
+          ### Binaries
+          | Asset | Platform |
+          |-------|----------|
+          | \`grok-win32-x64.exe\` | Windows x64 |
+          | \`grok-linux-x64\` | Linux x64 |
+          | \`grok-linux-arm64\` | Linux arm64 (generic CPU baseline) |
+          | \`grok-darwin-arm64\` | macOS Apple Silicon |
+
+          ### Install
+          \`\`\`bash
+          npm install -g @ruelya/grok-build@${VER}
+          npx grok-build install
+          \`\`\`
+
+          Built from [Actions run ${RID}](https://github.com/${{ github.repository }}/actions/runs/${RID}).
+          EOF
+          if gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG exists — replacing assets"
+            gh release delete "$TAG" -R "${{ github.repository }}" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" \
+            -R "${{ github.repository }}" \
+            --title "${TAG} (upstream product + -rev)" \
+            --notes-file "$NOTES" \
+            dist/grok-win32-x64.exe \
+            dist/grok-linux-x64 \
+            dist/grok-linux-arm64 \
+            dist/grok-darwin-arm64
+          rm -f "$NOTES"
+          gh release view "$TAG" -R "${{ github.repository }}" \
+            --json tagName,url,assets --jq '{tag:.tagName,url:.url,assets:[.assets[].name]}'

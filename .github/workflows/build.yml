@@ -1,5 +1,5 @@
-# Compile only — four platforms. Upload artifacts for manual/agent release.
-# Does NOT publish to npm or create GitHub Releases.
+# Compile only — four platforms. Upload artifacts.
+# Next: Actions → Release (workflow_dispatch) → then release-npm.
 #
 # Platforms: win32-x64, linux-x64, linux-arm64, darwin-arm64
 # (no Intel macOS)

@@ -1,6 +1,6 @@
 # Thin npm publish only (no compile).
-# Assumes GitHub Release v${version} already has the four binaries:
-#   grok-win32-x64.exe, grok-linux-x64, grok-linux-arm64, grok-darwin-arm64
+# Assumes GitHub Release v${version} already exists (create it via workflow
+# `release` after `build` succeeds).
 # Auth: NPM_TOKEN (Automation). Provenance via OIDC when available.
 
 name: release-npm
