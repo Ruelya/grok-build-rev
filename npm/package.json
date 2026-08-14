@@ -1,6 +1,6 @@
 {
   "name": "@ruelya/grok-build",
-  "version": "1.0.3-rev",
+  "version": "1.0.3-rev.1",
   "description": "Grok Build fork. Product version tracks upstream (currently 1.0.3-rev). Thin installer downloads from GitHub Releases.",
   "type": "module",
   "bin": {
@@ -48,5 +48,5 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "forkReleaseBase": "https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.3-rev"
+  "forkReleaseBase": "https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.3-rev.1"
 }

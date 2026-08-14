@@ -1,3 +1,4 @@
 product=1.0.3-rev
 upstream=1.0.3
-release=https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.3-rev
+packaging=1.0.3-rev.1
+release=https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.3-rev.1

@@ -35,8 +35,8 @@ pub use self::responses_lenient::{
     deserialize_response_body_loose, deserialize_response_stream_event_loose,
 };
 pub use self::tool_overrides::{
-    ClearableField, SearchDateBound, SearchDateBoundError, ToolOverrides, ToolOverridesUpdate,
-    WebSearchOptions, XSearchOptions,
+    ClearableField, MAX_WEB_SEARCH_DOMAINS, SearchDateBound, SearchDateBoundError, ToolOverrides,
+    ToolOverridesUpdate, WebSearchOptions, WebSearchOptionsError, XSearchOptions,
 };
 pub use self::types::*;
 
