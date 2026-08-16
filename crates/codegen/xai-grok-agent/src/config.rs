@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 use xai_grok_tools::implementations::codex;
+use xai_grok_tools::implementations::dsh_anchored;
 use xai_grok_tools::implementations::grok_build;
 use xai_grok_tools::implementations::grok_build_concise;
 use xai_grok_tools::implementations::memory;
@@ -526,6 +527,46 @@ fn grok_build_plan_no_subagents_toolset() -> ToolServerConfig {
         behavior_preset: None,
     }
 }
+/// Full unlockable catalog for `dsh-anchored-standard`.
+///
+/// Runtime filtering in the shell keeps request #1 on the official Minimal
+/// pair (`bash` + `str_replace_editor`). After promotion the resident set is
+/// that pair plus discovery tools plus names unlocked via `dev_tool_search`.
+fn dsh_anchored_standard_toolset() -> ToolServerConfig {
+    ToolServerConfig {
+        tools: vec![
+            (&dsh_anchored::DshBashTool).into(),
+            (&dsh_anchored::DshStrReplaceEditorTool).into(),
+            (&dsh_anchored::DshDevToolSearchTool).into(),
+            (&dsh_anchored::DshSkillSearchTool).into(),
+            (&dsh_anchored::DshSkillLoadTool).into(),
+            (&grok_build::ReadFileTool).into(),
+            (&grok_build::SearchReplaceTool).into(),
+            (&opencode::OpenCodeWriteTool).into(),
+            (&grok_build::ListDirTool).into(),
+            (&grok_build::GrepTool).into(),
+            kill_task_tool_config(),
+            (&grok_build::TodoWriteTool).into(),
+            task_output_tool_config(),
+            wait_tasks_tool_config(),
+            task_tool_config(),
+            (&grok_build::SchedulerCreateTool).into(),
+            (&grok_build::SchedulerDeleteTool).into(),
+            (&grok_build::SchedulerListTool).into(),
+            (&grok_build::MonitorTool).into(),
+            (&search_tool::SearchTool).into(),
+            (&use_tool::UseTool).into(),
+            (&grok_build::UpdateGoalTool).into(),
+            (&grok_build::WorkflowTool).into(),
+            (&grok_build::EnterPlanModeTool).into(),
+            (&grok_build::ExitPlanModeTool).into(),
+            (&grok_build::AskUserQuestionTool).into(),
+            (&grok_build::WebSearchTool).into(),
+            (&grok_build::WebFetchTool).into(),
+        ],
+        behavior_preset: None,
+    }
+}
 /// Default Grok Build toolset + `ask_user_question`.
 ///
 /// Same as `default_grok_build_toolset` with the `AskUserQuestionTool` added,
@@ -710,6 +751,7 @@ pub enum BuiltinAgentName {
     BrowserUse,
     #[strum(serialize = "grok-build-orchestrator")]
     GrokBuildOrchestrator,
+    DshAnchoredStandard,
 }
 /// Strict-harness predicate by name. Resolves via `BuiltinAgentName` and
 /// delegates to [`AgentDefinition::is_strict_harness`]; unknown names
@@ -738,6 +780,7 @@ impl BuiltinAgentName {
             Self::Plan => AgentDefinition::plan(),
             Self::BrowserUse => AgentDefinition::browser_use(),
             Self::GrokBuildOrchestrator => AgentDefinition::grok_build_orchestrator(),
+            Self::DshAnchoredStandard => AgentDefinition::dsh_anchored_standard(),
         }
     }
     /// Built-in agents available as subagents via the Task tool.
@@ -746,8 +789,8 @@ impl BuiltinAgentName {
     /// **enabled** by default is controlled by [`Self::default_enabled`]
     /// (stock five on; extended variants off until `[subagents.toggle]`).
     pub fn subagent_variants() -> &'static [Self] {
-        use strum::IntoEnumIterator;
         use std::sync::OnceLock;
+        use strum::IntoEnumIterator;
         static ALL: OnceLock<Vec<BuiltinAgentName>> = OnceLock::new();
         ALL.get_or_init(|| BuiltinAgentName::iter().collect())
             .as_slice()
@@ -759,15 +802,12 @@ impl BuiltinAgentName {
     /// `plan`, `browser-use`.
     ///
     /// **Off by default** (fork-opened catalog; enable via `/agents` or config):
-    /// concise / plan variants / ask-user / codex / opencode / orchestrator.
+    /// concise / plan variants / ask-user / codex / opencode / orchestrator /
+    /// dsh-anchored-standard.
     pub fn default_enabled(self) -> bool {
         matches!(
             self,
-            Self::GrokBuild
-                | Self::GeneralPurpose
-                | Self::Explore
-                | Self::Plan
-                | Self::BrowserUse
+            Self::GrokBuild | Self::GeneralPurpose | Self::Explore | Self::Plan | Self::BrowserUse
         )
     }
 }
@@ -1715,6 +1755,26 @@ impl AgentDefinition {
             )
         }
     }
+    /// DeepSeek Harness Anchored Standard — Minimal first-request schema,
+    /// then a resident catalog unlocked on demand.
+    ///
+    /// Port of the `dsh-anchored-standard` plugin. Bootstrap exposes the
+    /// official Minimal pair; promotion, compaction epochs, and
+    /// instruction-hint injection are applied at runtime by the shell.
+    pub fn dsh_anchored_standard() -> Self {
+        Self {
+            prompt_mode: PromptMode::Full,
+            tool_config: dsh_anchored_standard_toolset(),
+            agents_md: false,
+            inject_default_tools: false,
+            discover_skills: true,
+            prompt_body: Some(crate::dsh_anchored::PERSONA.to_string()),
+            ..Self::base(
+                BuiltinAgentName::DshAnchoredStandard,
+                "DeepSeek Harness Anchored Standard: Minimal bootstrap pair, then on-demand resident catalog",
+            )
+        }
+    }
     /// Deserialize an agent definition from a JSON value (e.g. from ACP `_meta.agentProfile`).
     ///
     /// Unlike `parse()` (which reads YAML frontmatter + Markdown body from a file),
@@ -1791,39 +1851,19 @@ mod tests {
     #[test]
     fn apply_toolset_style_override_changes_tool_names() {
         let mut def = AgentDefinition::default_grok_build();
-        let baseline: Vec<_> = def
-            .tool_config
-            .tools
-            .iter()
-            .map(|t| t.id.clone())
-            .collect();
+        let baseline: Vec<_> = def.tool_config.tools.iter().map(|t| t.id.clone()).collect();
         apply_toolset_style_override(&mut def, None);
-        let still: Vec<_> = def
-            .tool_config
-            .tools
-            .iter()
-            .map(|t| t.id.clone())
-            .collect();
+        let still: Vec<_> = def.tool_config.tools.iter().map(|t| t.id.clone()).collect();
         assert_eq!(baseline, still, "None style keeps agent default toolset");
 
         apply_toolset_style_override(&mut def, Some("explore"));
-        let explore_ids: Vec<_> = def
-            .tool_config
-            .tools
-            .iter()
-            .map(|t| t.id.clone())
-            .collect();
+        let explore_ids: Vec<_> = def.tool_config.tools.iter().map(|t| t.id.clone()).collect();
         assert_ne!(
             baseline, explore_ids,
             "explore style must yield a different tool-name set"
         );
         apply_toolset_style_override(&mut def, Some("does-not-exist"));
-        let after_unknown: Vec<_> = def
-            .tool_config
-            .tools
-            .iter()
-            .map(|t| t.id.clone())
-            .collect();
+        let after_unknown: Vec<_> = def.tool_config.tools.iter().map(|t| t.id.clone()).collect();
         assert_eq!(
             explore_ids, after_unknown,
             "unknown style must leave the previous toolset intact"
@@ -1944,7 +1984,9 @@ mod tests {
     /// until classified.
     fn expected_strict_harness(name: BuiltinAgentName) -> bool {
         match name {
-            BuiltinAgentName::Codex | BuiltinAgentName::GrokBuildOrchestrator => true,
+            BuiltinAgentName::Codex
+            | BuiltinAgentName::GrokBuildOrchestrator
+            | BuiltinAgentName::DshAnchoredStandard => true,
             BuiltinAgentName::GrokBuild
             | BuiltinAgentName::GrokBuildConcise
             | BuiltinAgentName::GrokBuildPlan
@@ -1975,7 +2017,7 @@ mod tests {
     }
     #[test]
     fn is_strict_harness_agent_type_classifies_by_name() {
-        for strict in ["codex", "grok-build-orchestrator"] {
+        for strict in ["codex", "grok-build-orchestrator", "dsh-anchored-standard"] {
             assert!(
                 is_strict_harness_agent_type(strict),
                 "{strict} should be strict"
@@ -2649,6 +2691,10 @@ description: Test default tool config
             ("explore", BuiltinAgentName::Explore),
             ("plan", BuiltinAgentName::Plan),
             ("browser-use", BuiltinAgentName::BrowserUse),
+            (
+                "dsh-anchored-standard",
+                BuiltinAgentName::DshAnchoredStandard,
+            ),
         ] {
             let parsed = BuiltinAgentName::from_str(s).unwrap();
             assert_eq!(parsed, expected, "from_str failed for: {s}");
@@ -2695,6 +2741,31 @@ description: Test default tool config
         assert!(variants.contains(&BuiltinAgentName::Plan));
         assert!(variants.contains(&BuiltinAgentName::BrowserUse));
         assert!(variants.contains(&BuiltinAgentName::GrokBuildOrchestrator));
+        assert!(variants.contains(&BuiltinAgentName::DshAnchoredStandard));
+    }
+    #[test]
+    fn dsh_anchored_standard_is_strict_minimal_persona() {
+        let def = AgentDefinition::dsh_anchored_standard();
+        assert_eq!(def.name, "dsh-anchored-standard");
+        assert_eq!(def.prompt_mode, PromptMode::Full);
+        assert_eq!(
+            def.prompt_body.as_deref(),
+            Some(crate::dsh_anchored::PERSONA)
+        );
+        assert!(!def.agents_md);
+        assert!(!def.inject_default_tools);
+        assert!(def.discover_skills);
+        assert!(def.is_strict_harness());
+        assert!(!BuiltinAgentName::DshAnchoredStandard.default_enabled());
+        let ids: Vec<&str> = def
+            .tool_config
+            .tools
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert!(ids.iter().any(|id| id.ends_with(":bash")));
+        assert!(ids.iter().any(|id| id.ends_with(":str_replace_editor")));
+        assert!(ids.iter().any(|id| id.ends_with(":dev_tool_search")));
     }
     #[test]
     fn test_all_builtins_have_inherit_model() {
