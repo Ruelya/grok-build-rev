@@ -141,6 +141,7 @@ The **full catalog is registered**, but only the **stock five** are **enabled by
 | `codex` | off | **Codex** tool naming + apply-patch style edit + Codex system prompt |
 | `opencode` | off | **OpenCode** tool conventions (read/edit/write/grep/glob/skill) |
 | `grok-build-orchestrator` | off | Orchestrator: research + Task stack; **no** local search_replace — delegates coding |
+| `dsh-anchored-standard` | off | DeepSeek Harness Anchored Standard: official Minimal `bash` + `str_replace_editor` on request #1, then a resident catalog unlocked via `dev_tool_search` |
 
 #### Toolset summary (what each can actually do)
 
@@ -158,6 +159,7 @@ The **full catalog is registered**, but only the **stock five** are **enabled by
 | `codex` | yes | apply_patch | no Task | — | — | Codex prompt + tools |
 | `opencode` | OpenCode bash | OpenCode edit/write | no Task | — | — | OpenCode param style |
 | `grok-build-orchestrator` | research bash | **no edit** | **yes** | **yes** | **yes** | Delegate to implementers |
+| `dsh-anchored-standard` | official Minimal `bash` | `str_replace_editor` | unlock | unlock | unlock | Bootstrap pair, then on-demand tools |
 
 #### Enable / disable
 
@@ -169,6 +171,7 @@ The **full catalog is registered**, but only the **stock five** are **enabled by
 codex = true
 opencode = true
 grok-build-orchestrator = true
+dsh-anchored-standard = true
 # stock five can be forced off:
 # explore = false
 ```
@@ -391,6 +394,7 @@ comment = "#565f89"
 | `codex` | 关 | **Codex** 工具命名 + apply-patch 风格编辑 + Codex 系统提示词 |
 | `opencode` | 关 | **OpenCode** 工具约定（read/edit/write/grep/glob/skill） |
 | `grok-build-orchestrator` | 关 | 编排型：研究 + Task 栈；**不**本地 search_replace — 委派编码 |
+| `dsh-anchored-standard` | 关 | DeepSeek Harness Anchored Standard：第 1 轮官方 Minimal 的 `bash` + `str_replace_editor`，之后用 `dev_tool_search` 按需解锁驻留目录 |
 
 Tips: 通过 grok --agent [已注册agent] 可以切换主对话agent type
 
@@ -412,6 +416,7 @@ eg. grok --agent grok-build-orchestrator
 | `codex` | 有 | apply_patch | 无 Task | — | — | Codex prompt + 工具 |
 | `opencode` | OpenCode bash | OpenCode 编辑/写 | 无 Task | — | — | OpenCode 参数风格 |
 | `grok-build-orchestrator` | 调研 bash | **不编辑** | **有** | **有** | **有** | 委派给实现子 agent |
+| `dsh-anchored-standard` | 官方 Minimal `bash` | `str_replace_editor` | 按需解锁 | 按需解锁 | 按需解锁 | 先锚定 Minimal，再按需开工具 |
 
 #### 开关方式
 
@@ -423,6 +428,7 @@ eg. grok --agent grok-build-orchestrator
 codex = true
 opencode = true
 grok-build-orchestrator = true
+dsh-anchored-standard = true
 # 也可强制关闭默认开启的五个：
 # explore = false
 ```

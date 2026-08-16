@@ -205,6 +205,7 @@ enabled = true
 # opencode = true
 # browser-use = true
 # grok-build-orchestrator = true
+# dsh-anchored-standard = true
 
 # [subagents.models]
 # explore = "grok-3-fast"
