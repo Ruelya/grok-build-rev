@@ -71,6 +71,34 @@ pub(crate) async fn test_agent_with_plan_tools() -> xai_grok_agent::Agent {
     ])
     .await
 }
+/// Built-in `dsh-anchored-standard` agent with its unlockable toolset registered.
+#[cfg(test)]
+pub(crate) async fn test_dsh_anchored_agent() -> xai_grok_agent::Agent {
+    let definition = xai_grok_agent::AgentDefinition::dsh_anchored_standard();
+    test_agent_from_config(
+        definition.tool_config.clone(),
+        definition,
+        std::sync::Arc::new(xai_grok_tools::computer::local::LocalTerminalBackend::new()),
+    )
+    .await
+}
+
+/// Same unlockable catalog as anchored-standard, but named `grok-build` so the
+/// phase filter must not apply.
+#[cfg(test)]
+pub(crate) async fn test_grok_build_agent_with_dsh_catalog() -> xai_grok_agent::Agent {
+    let mut definition = xai_grok_agent::AgentDefinition::default_grok_build();
+    definition.tool_config = xai_grok_agent::AgentDefinition::dsh_anchored_standard()
+        .tool_config
+        .clone();
+    test_agent_from_config(
+        definition.tool_config.clone(),
+        definition,
+        std::sync::Arc::new(xai_grok_tools::computer::local::LocalTerminalBackend::new()),
+    )
+    .await
+}
+
 #[cfg(test)]
 pub(crate) async fn test_agent_with_tools(
     tools: Vec<xai_grok_tools::registry::types::ToolConfig>,

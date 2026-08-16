@@ -1721,6 +1721,9 @@ mod plan_mode_midturn_tests;
 ///   user message, when the wrapper prefix appears in a non-first content
 ///   part, and when the wrapper prefix is buried mid-text.
 #[cfg(test)]
+#[path = "acp_session_tests/dsh_anchored_standard_tests.rs"]
+mod dsh_anchored_standard_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/project_instructions_idempotence_tests.rs"]
 mod project_instructions_idempotence_tests;
 #[cfg(test)]

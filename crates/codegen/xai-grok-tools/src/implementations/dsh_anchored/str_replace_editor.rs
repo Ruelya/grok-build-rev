@@ -595,6 +595,27 @@ mod tests {
     }
 
     #[test]
+    fn schema_requires_command_and_path() {
+        let schema = schemars::schema_for!(DshStrReplaceEditorInput);
+        let value = serde_json::to_value(schema).unwrap();
+        let required = value["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("command")));
+        assert!(required.contains(&serde_json::json!("path")));
+        let props = value["properties"].as_object().unwrap();
+        for key in [
+            "command",
+            "path",
+            "file_text",
+            "insert_line",
+            "new_str",
+            "old_str",
+            "view_range",
+        ] {
+            assert!(props.contains_key(key), "missing official parameter {key}");
+        }
+    }
+
+    #[test]
     fn id_is_str_replace_editor() {
         assert_eq!(
             xai_tool_runtime::Tool::id(&DshStrReplaceEditorTool).as_str(),
