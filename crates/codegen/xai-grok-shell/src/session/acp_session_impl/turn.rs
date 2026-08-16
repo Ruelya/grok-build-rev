@@ -2106,6 +2106,7 @@ impl SessionActor {
                 );
             }
             self.maybe_inject_mcp_reminder().await;
+            self.maybe_inject_dsh_instruction_hint().await;
             if self.tool_context.task_output_token_budget.is_none()
                 && self.two_pass_active()
                 && !self.compaction.prefire.has_cache()
@@ -2138,6 +2139,10 @@ impl SessionActor {
             let mut effective_tools: Vec<ToolSpec> =
                 if let Some(ref override_tools) = self.forked_tool_override {
                     override_tools.clone()
+                } else if self.is_dsh_anchored_standard() {
+                    // Re-assemble each model request so promotion takes effect
+                    // after the first durable assistant/tool-call (DSH request #2).
+                    self.turn_base_tool_specs(&self.prepare_tool_definitions_inner().await)
                 } else {
                     self.turn_base_tool_specs(&tool_definitions)
                 };

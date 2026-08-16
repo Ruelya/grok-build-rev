@@ -296,6 +296,42 @@ impl SessionActor {
             self.persist_plan_mode_state();
         }
     }
+    /// One-shot post-promotion hint: instruction files exist, read them first.
+    /// Never dumps AGENTS.md / CLAUDE.md bodies (DSH `instruction-hint.mjs`).
+    pub(super) async fn maybe_inject_dsh_instruction_hint(&self) {
+        if !self.is_dsh_anchored_standard() {
+            return;
+        }
+        let conversation = self.chat_state_handle.get_conversation().await;
+        if xai_grok_agent::dsh_anchored::derive_phase(&conversation, self.startup_hints.is_subagent)
+            != xai_grok_agent::dsh_anchored::DshPhase::Promoted
+        {
+            return;
+        }
+        if xai_grok_agent::dsh_anchored::conversation_has_instruction_hint(&conversation) {
+            return;
+        }
+        let cwd = std::path::PathBuf::from(&self.session_info.cwd);
+        let project_root = find_instruction_project_root(&cwd).await;
+        let mut project_files = Vec::new();
+        for name in xai_grok_agent::dsh_anchored::PROJECT_INSTRUCTION_CANDIDATES {
+            let path = project_root.join(name);
+            if tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file()) {
+                project_files.push((*name).to_string());
+            }
+        }
+        let user_global = crate::util::grok_home::grok_home()
+            .join("AGENTS.md")
+            .is_file();
+        let Some(text) = xai_grok_agent::dsh_anchored::format_instruction_hint(
+            &project_files,
+            &project_root.display().to_string(),
+            user_global,
+        ) else {
+            return;
+        };
+        self.push_system_reminder_with_tag(&text, self.reminder_wrapper_tag());
+    }
     /// Activate plan mode for a turn that is already running.
     ///
     /// Mid-turn counterpart of `inject_plan_mode_reminders` case 1: the user
@@ -402,5 +438,20 @@ impl SessionActor {
             .notifications
             .persistence_tx
             .send(PersistenceMsg::PlanModeState(snapshot));
+    }
+}
+
+async fn find_instruction_project_root(cwd: &std::path::Path) -> std::path::PathBuf {
+    let mut current = cwd.to_path_buf();
+    loop {
+        for marker in [".git", ".hg", ".svn"] {
+            if tokio::fs::metadata(current.join(marker)).await.is_ok() {
+                return current;
+            }
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => return cwd.to_path_buf(),
+        }
     }
 }
