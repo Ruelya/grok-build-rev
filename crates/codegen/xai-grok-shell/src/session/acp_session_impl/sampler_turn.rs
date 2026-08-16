@@ -211,11 +211,28 @@ impl SessionActor {
         self.resolved_tool_overrides
             .store((!effective.is_empty()).then(|| std::sync::Arc::new(effective)));
     }
+    pub(super) fn is_dsh_anchored_standard(&self) -> bool {
+        self.agent.borrow().name() == xai_grok_agent::dsh_anchored::AGENT_NAME
+    }
     pub(super) async fn prepare_tool_definitions_inner(&self) -> Vec<ToolDefinition> {
         let bridge = self.agent.borrow().tool_bridge().clone();
         let defs = bridge.tool_definitions_builtins_only().await;
         let plan_active = self.plan_mode.lock().is_active();
-        filter_cursor_tools_by_plan_mode(defs, plan_active)
+        let defs = filter_cursor_tools_by_plan_mode(defs, plan_active);
+        if !self.is_dsh_anchored_standard() {
+            return defs;
+        }
+        let conversation = self.chat_state_handle.get_conversation().await;
+        let available: Vec<String> = defs.iter().map(|d| d.function.name.clone()).collect();
+        let keep = xai_grok_agent::dsh_anchored::filter_tool_names(
+            &available,
+            &conversation,
+            self.startup_hints.is_subagent,
+        );
+        let keep: std::collections::HashSet<&str> = keep.iter().map(String::as_str).collect();
+        defs.into_iter()
+            .filter(|def| keep.contains(def.function.name.as_str()))
+            .collect()
     }
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
         self.model_auth_state(model_id).0
@@ -429,7 +446,7 @@ impl SessionActor {
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
-            auto_prompt_cache_key: false,
+                auto_prompt_cache_key: false,
             });
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());

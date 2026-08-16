@@ -1,7 +1,7 @@
 use crate::{
     computer::types::{AsyncFileSystem, TerminalBackend},
     implementations::{
-        codex, grok_build, grok_build_concise, grok_build_hashline, opencode,
+        codex, dsh_anchored, grok_build, grok_build_concise, grok_build_hashline, opencode,
         skills::types::SkillInfo,
     },
     notification::ToolNotificationHandle,
@@ -724,6 +724,11 @@ impl ToolRegistryBuilder {
         b.register::<opencode::OpenCodeGlobTool>();
         b.register::<opencode::OpenCodeTodoWriteTool>();
         b.register::<opencode::OpenCodeSkillTool>();
+        b.register::<dsh_anchored::DshBashTool>();
+        b.register::<dsh_anchored::DshStrReplaceEditorTool>();
+        b.register::<dsh_anchored::DshDevToolSearchTool>();
+        b.register::<dsh_anchored::DshSkillSearchTool>();
+        b.register::<dsh_anchored::DshSkillLoadTool>();
         b.register::<crate::implementations::memory::search_tool::MemorySearchImpl>();
         b.register::<crate::implementations::memory::get_tool::MemoryGetImpl>();
         b.register::<crate::implementations::search_tool::SearchTool>();

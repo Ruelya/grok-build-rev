@@ -1168,10 +1168,14 @@ mod tests {
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"grok-build"));
         assert!(names.contains(&"explore"));
-        assert!(!names.contains(&"codex"), "extended builtins off by default");
+        assert!(
+            !names.contains(&"codex"),
+            "extended builtins off by default"
+        );
         assert!(!names.contains(&"opencode"));
         assert!(!names.contains(&"grok-build-orchestrator"));
         assert!(!names.contains(&"grok-build-concise"));
+        assert!(!names.contains(&"dsh-anchored-standard"));
     }
 
     #[test]

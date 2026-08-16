@@ -86,6 +86,11 @@ impl SessionActor {
             )
         });
         let effects = bridge.apply_pending_skill_update().await?;
+        // Anchored Standard never injects the skill-catalog reminder
+        // (`dsh-tool-skill` is replaced by skill_search / skill_load).
+        if self.is_dsh_anchored_standard() {
+            return Some(effects);
+        }
         if let Some(item) = self.wrap_skill_reminder(&effects) {
             conversation.push(item);
         }
@@ -115,6 +120,14 @@ impl SessionActor {
         let Some(mut handle) = self.deferred_prefix.take() else {
             return;
         };
+        if self.is_dsh_anchored_standard() {
+            handle.abort();
+            tracing::info!(
+                session_id = %self.session_info.id.0,
+                "ensure_prefix_ready: skipped user prefix / AGENTS.md for dsh-anchored-standard"
+            );
+            return;
+        }
         let start = std::time::Instant::now();
         const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let (prefix, source) = match tokio::time::timeout(WAIT_TIMEOUT, &mut handle).await {
@@ -279,6 +292,9 @@ impl SessionActor {
         effects: &xai_grok_tools::types::skill_discovery_tracker::SkillUpdateEffects,
     ) -> Option<ConversationItem> {
         use xai_grok_tools::types::skill_discovery_tracker::SkillUpdateKind;
+        if self.is_dsh_anchored_standard() {
+            return None;
+        }
         let is_cursor = self.is_cursor_harness();
         if is_cursor && effects.kind == SkillUpdateKind::BaselineChange {
             return None;

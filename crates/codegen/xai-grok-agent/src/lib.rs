@@ -10,6 +10,7 @@ pub mod builder;
 pub mod compaction;
 pub mod config;
 pub mod discovery;
+pub mod dsh_anchored;
 pub mod error;
 pub mod plugins;
 pub mod prompt;
