@@ -91,6 +91,9 @@ pub async fn run_command_hook(
         || command_str.contains('$')
         || command_str.starts_with('~');
 
+    #[cfg(not(unix))]
+    let mut privileged_env: Vec<(String, String)> = Vec::new();
+
     let mut cmd = if is_shell_command {
         // Fail fast on env vars we can't resolve (runner vars, per-hook
         // extra_env, or process env). Letting sh expand them to empty yields a
@@ -120,6 +123,7 @@ pub async fn run_command_hook(
         #[cfg(not(unix))]
         {
             let inv = xai_grok_config::shell::shell_command_argv(&command_str);
+            privileged_env = inv.privileged_env;
             let mut c = tokio::process::Command::new(&inv.program);
             c.args(&inv.args).envs(inv.env);
             c
@@ -156,9 +160,7 @@ pub async fn run_command_hook(
     // See the `runner_injected_vars_override_extra_env_at_spawn`
     // regression test in `tests/integration.rs` and the rustdoc on
     // `HookSpec::extra_env`.
-    #[allow(clippy::disallowed_methods)] // enrolled in the session scope below
-    let mut child = match cmd
-        .stdin(std::process::Stdio::piped())
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .current_dir(ctx.workspace_root)
@@ -172,10 +174,14 @@ pub async fn run_command_hook(
         // Compatibility alias for external hooks that read this env name.
         // Same value as `GROK_WORKSPACE_ROOT`; native `.grok` hooks should use
         // `GROK_WORKSPACE_ROOT`.
-        .env("CLAUDE_PROJECT_DIR", ctx.workspace_root)
-        .kill_on_drop(true)
-        .spawn()
+        .env("CLAUDE_PROJECT_DIR", ctx.workspace_root);
+    #[cfg(not(unix))]
     {
+        // Staged Git Bash script — after extra_env so a hook cannot replace it.
+        cmd.envs(privileged_env);
+    }
+    #[allow(clippy::disallowed_methods)] // enrolled in the session scope below
+    let mut child = match cmd.kill_on_drop(true).spawn() {
         Ok(c) => c,
         Err(e) => {
             let elapsed = start.elapsed();

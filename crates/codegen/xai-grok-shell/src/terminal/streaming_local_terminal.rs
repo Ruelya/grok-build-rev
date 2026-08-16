@@ -866,14 +866,14 @@ fn spawn_shell_command(
     #[cfg(unix)]
     {
         let program = crate::terminal::default_shell_path();
-        spawn_with_argv(program, cwd, env, |cmd| {
+        spawn_with_argv(program, cwd, env, &[], |cmd| {
             cmd.arg("-c").arg(command);
         })
     }
     #[cfg(not(unix))]
     {
         let inv = xai_grok_config::shell::shell_command_argv(command);
-        spawn_with_argv(&inv.program, cwd, env, |cmd| {
+        spawn_with_argv(&inv.program, cwd, env, &inv.privileged_env, |cmd| {
             cmd.args(&inv.args).envs(inv.env);
         })
     }
@@ -886,7 +886,7 @@ fn spawn_program_with_args(
     cwd: &impl AsRef<std::path::Path>,
     env: &HashMap<String, String>,
 ) -> std::io::Result<Box<dyn process_wrap::tokio::ChildWrapper>> {
-    spawn_with_argv(program, cwd, env, |cmd| {
+    spawn_with_argv(program, cwd, env, &[], |cmd| {
         cmd.args(args);
     })
 }
@@ -894,10 +894,14 @@ fn spawn_program_with_args(
 /// Shared spawn ceremony for [`spawn_shell_command`] and
 /// [`spawn_program_with_args`]. `set_argv` populates argv only;
 /// cwd/env/stdio/teardown are configured here.
+///
+/// `after_env` is applied last (after request env and pager vars) so a
+/// staged Git Bash script cannot be overwritten by caller env.
 fn spawn_with_argv(
     program: &str,
     cwd: &impl AsRef<std::path::Path>,
     env: &HashMap<String, String>,
+    after_env: &[(String, String)],
     set_argv: impl FnOnce(&mut tokio::process::Command),
 ) -> std::io::Result<Box<dyn process_wrap::tokio::ChildWrapper>> {
     #[cfg(unix)]
@@ -909,6 +913,7 @@ fn spawn_with_argv(
             cmd.current_dir(cwd)
                 .envs(env)
                 .envs(crate::terminal::pager_env())
+                .envs(after_env.iter().cloned())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -936,6 +941,7 @@ fn spawn_with_argv(
             cmd.current_dir(cwd)
                 .envs(env)
                 .envs(crate::terminal::pager_env())
+                .envs(after_env.iter().cloned())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
