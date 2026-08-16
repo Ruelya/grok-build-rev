@@ -1923,7 +1923,6 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
-            auto_prompt_cache_key: false,
             laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,
@@ -2208,7 +2207,6 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

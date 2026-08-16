@@ -5,8 +5,6 @@
 //! share that prefix cache. `derive_recap_prompt_cache_key` is a reserved
 //! isolated derivation and is not used on the wire.
 
-use crate::ApiBackend;
-
 /// Stable main-turn `prompt_cache_key` for a session when auto-attach is enabled.
 ///
 /// Same session id always yields the same main key across turns.
@@ -18,20 +16,6 @@ pub fn derive_main_prompt_cache_key(session_id: &str) -> String {
 /// parent session id, same as official).
 pub fn derive_recap_prompt_cache_key(session_id: &str) -> String {
     format!("xai-recap-{session_id}")
-}
-
-/// When `auto_enabled` and the backend forwards the field (Responses), return
-/// the main-turn key; otherwise omit (no auto attach).
-pub fn resolve_main_auto_prompt_cache_key(
-    session_id: &str,
-    auto_enabled: bool,
-    api_backend: &ApiBackend,
-) -> Option<String> {
-    if auto_enabled && api_backend.forwards_prompt_cache_key() {
-        Some(derive_main_prompt_cache_key(session_id))
-    } else {
-        None
-    }
 }
 
 /// Resolve which model slug recap should use.
@@ -76,31 +60,6 @@ mod tests {
         assert_ne!(main, recap);
         assert!(recap.contains(session));
         assert_eq!(recap, format!("xai-recap-{session}"));
-    }
-
-    #[test]
-    fn auto_main_key_only_when_enabled_and_responses() {
-        let sid = "s1";
-        assert_eq!(
-            resolve_main_auto_prompt_cache_key(sid, true, &ApiBackend::Responses),
-            Some(derive_main_prompt_cache_key(sid))
-        );
-        assert_eq!(
-            resolve_main_auto_prompt_cache_key(sid, true, &ApiBackend::OpenAIResponses),
-            Some(derive_main_prompt_cache_key(sid))
-        );
-        assert_eq!(
-            resolve_main_auto_prompt_cache_key(sid, false, &ApiBackend::Responses),
-            None
-        );
-        assert_eq!(
-            resolve_main_auto_prompt_cache_key(sid, true, &ApiBackend::ChatCompletions),
-            None
-        );
-        assert_eq!(
-            resolve_main_auto_prompt_cache_key(sid, true, &ApiBackend::Messages),
-            None
-        );
     }
 
     #[test]

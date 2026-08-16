@@ -3900,7 +3900,6 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,
                 stream_tool_calls: None,
-                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             };
             (key, config)
@@ -4029,11 +4028,6 @@ pub struct ModelEntryConfig {
     /// flag should leave this unset to avoid request errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
-    /// Retained for config compatibility. Official Responses mapping always
-    /// sends `prompt_cache_key` (falls back to `x_grok_conv_id`); this flag
-    /// no longer changes the wire.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to
     /// the all-disabled state via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "is_default_laziness_detector")]
@@ -4106,10 +4100,6 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
-    /// Retained for config compatibility. Official Responses mapping always
-    /// sends `prompt_cache_key` (falls back to `x_grok_conv_id`); this flag
-    /// no longer changes the wire.
-    pub auto_prompt_cache_key: Option<bool>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4207,9 +4197,6 @@ impl ConfigModelOverride {
         if self.stream_tool_calls.is_some() {
             entry.info.stream_tool_calls = self.stream_tool_calls;
         }
-        if let Some(v) = self.auto_prompt_cache_key {
-            entry.info.auto_prompt_cache_key = v;
-        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -4301,10 +4288,6 @@ pub struct ModelInfo {
     pub show_model_fingerprint: bool,
     /// When `Some(true)`, the sampler injects `stream_tool_calls: true`
     pub stream_tool_calls: Option<bool>,
-    /// Retained for config compatibility. Official Responses mapping always
-    /// sends `prompt_cache_key`; this flag no longer changes the wire.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_prompt_cache_key: bool,
     /// Per-model Layer-3 LazinessDetector configuration. Defaults to
     /// the all-disabled state — the feature is per-model opt-in with a
     /// second-step `max_nudges_per_session > 0` opt-in for actually
@@ -4349,7 +4332,6 @@ impl ModelInfo {
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
-            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         }
     }
@@ -4388,7 +4370,6 @@ impl ModelInfo {
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
-            auto_prompt_cache_key: entry.auto_prompt_cache_key,
             laziness_detector: entry.laziness_detector.clone(),
         }
     }
@@ -5157,7 +5138,6 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
-                auto_prompt_cache_key: false,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
             },
             api_key: Some(bearer),
@@ -5307,7 +5287,6 @@ pub(crate) fn sampling_config_for_model(
         force_http1: false,
         max_retries: info.max_retries,
         stream_tool_calls: info.stream_tool_calls.unwrap_or(false),
-        auto_prompt_cache_key: info.auto_prompt_cache_key,
         idle_timeout_secs: None,
         client_identifier: None,
         deployment_id,
@@ -5396,7 +5375,6 @@ fn resolve_hidden_default_web_search_sampling_config(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
-            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         api_key: None,

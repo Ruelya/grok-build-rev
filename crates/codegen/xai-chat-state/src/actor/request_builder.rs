@@ -90,11 +90,8 @@ impl ChatStateActor {
 
         // Step 4: Assemble request
         // Main turns pass session id as conv_id (see shell turn pipeline).
-        let prompt_cache_key = xai_grok_sampling_types::resolve_main_auto_prompt_cache_key(
-            &conv_id,
-            self.state.sampling_config.auto_prompt_cache_key,
-            &self.state.sampling_config.api_backend,
-        );
+        // Responses wire mapping fills `prompt_cache_key` from `x_grok_conv_id`
+        // when this field is None.
         ConversationRequest {
             items,
             tools: tool_definitions,
@@ -112,7 +109,7 @@ impl ChatStateActor {
             x_grok_deployment_id: None,
             x_grok_user_id: None,
             trace,
-            prompt_cache_key,
+            prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
             json_schema: None,
         }

@@ -77,10 +77,6 @@ pub struct SamplerConfig {
     pub force_http1: bool,
     pub max_retries: Option<u32>,
     pub stream_tool_calls: bool,
-    /// Retained for config compatibility. Official Responses mapping always
-    /// sends `prompt_cache_key`; this flag no longer changes the wire.
-    #[serde(default)]
-    pub auto_prompt_cache_key: bool,
     pub idle_timeout_secs: Option<u64>,
 
     // Reasoning effort
@@ -161,7 +157,6 @@ impl Default for SamplerConfig {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
-            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
             origin_client: None,

@@ -28,8 +28,7 @@ pub use self::error::{
     is_retryable_api_status, parse_error_code, status_user_message, user_facing_api_error_message,
 };
 pub use self::prompt_cache_key::{
-    derive_main_prompt_cache_key, derive_recap_prompt_cache_key, resolve_main_auto_prompt_cache_key,
-    resolve_recap_model_id,
+    derive_main_prompt_cache_key, derive_recap_prompt_cache_key, resolve_recap_model_id,
 };
 pub use self::responses_lenient::{
     deserialize_response_body_loose, deserialize_response_stream_event_loose,

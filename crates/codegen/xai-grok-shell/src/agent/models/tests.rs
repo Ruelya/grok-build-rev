@@ -2050,7 +2050,6 @@ fn make_entry_config_with_id(
         compaction_at_tokens: None,
         show_model_fingerprint: false,
         stream_tool_calls: None,
-        auto_prompt_cache_key: false,
         laziness_detector: config::LazinessDetectorPerModelConfig::default(),
     }
 }

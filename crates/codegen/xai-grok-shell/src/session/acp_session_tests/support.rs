@@ -250,7 +250,6 @@ pub(crate) async fn create_test_actor_with_terminal(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
-        auto_prompt_cache_key: false,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,

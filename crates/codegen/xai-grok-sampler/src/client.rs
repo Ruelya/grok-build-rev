@@ -2257,7 +2257,6 @@ mod tests {
             force_http1: false,
             max_retries: None,
             stream_tool_calls: false,
-            auto_prompt_cache_key: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
             origin_client: None,

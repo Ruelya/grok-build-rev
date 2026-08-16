@@ -31,7 +31,6 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
             .expect("test context_window must be non-zero"),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     }
 }
 
@@ -1337,7 +1336,6 @@ async fn update_sampling_config_is_queryable() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     };
     h.handle.update_sampling_config(new_config.clone());
 
@@ -1578,62 +1576,9 @@ async fn build_request_includes_all_messages() {
     assert_eq!(request.items.len(), 2);
     assert_eq!(request.x_grok_conv_id, Some("conv-1".to_string()));
     assert_eq!(request.x_grok_req_id, Some("req-1".to_string()));
-    // Default auto_prompt_cache_key is off → main turns omit the field.
+    // Chat-state leaves prompt_cache_key unset; Responses mapping fills it
+    // from x_grok_conv_id on the wire.
     assert_eq!(request.prompt_cache_key, None);
-}
-
-#[tokio::test]
-async fn build_request_auto_prompt_cache_key_on_responses() {
-    use xai_grok_sampling_types::ApiBackend;
-
-    let mut cfg = test_config();
-    cfg.api_backend = ApiBackend::Responses;
-    cfg.auto_prompt_cache_key = true;
-    let h = TestHarness::with_config(vec![], cfg);
-
-    let session = "sess-stable-1";
-    let r1 = h
-        .handle
-        .build_request(vec![], None, false, None, session.into(), "req-1".into())
-        .await
-        .unwrap();
-    let r2 = h
-        .handle
-        .build_request(vec![], None, false, None, session.into(), "req-2".into())
-        .await
-        .unwrap();
-    let expected = xai_grok_sampling_types::derive_main_prompt_cache_key(session);
-    assert_eq!(r1.prompt_cache_key.as_deref(), Some(expected.as_str()));
-    assert_eq!(r2.prompt_cache_key, r1.prompt_cache_key, "same session → same main key");
-}
-
-#[tokio::test]
-async fn build_request_auto_prompt_cache_key_disabled_or_non_responses() {
-    use xai_grok_sampling_types::ApiBackend;
-
-    // Responses but auto off
-    let mut cfg = test_config();
-    cfg.api_backend = ApiBackend::Responses;
-    cfg.auto_prompt_cache_key = false;
-    let h = TestHarness::with_config(vec![], cfg);
-    let r = h
-        .handle
-        .build_request(vec![], None, false, None, "s".into(), "r".into())
-        .await
-        .unwrap();
-    assert_eq!(r.prompt_cache_key, None);
-
-    // Auto on but ChatCompletions does not forward
-    let mut cfg = test_config();
-    cfg.api_backend = ApiBackend::ChatCompletions;
-    cfg.auto_prompt_cache_key = true;
-    let h = TestHarness::with_config(vec![], cfg);
-    let r = h
-        .handle
-        .build_request(vec![], None, false, None, "s".into(), "r".into())
-        .await
-        .unwrap();
-    assert_eq!(r.prompt_cache_key, None);
 }
 
 #[tokio::test]
@@ -1809,7 +1754,6 @@ async fn build_request_uses_sampling_config() {
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -3953,7 +3897,6 @@ async fn sampling_config_survives_compaction_replacement() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     };
 
     let h = TestHarness::with_config(
@@ -4039,7 +3982,6 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     };
 
     let h = TestHarness::with_config(
@@ -4130,7 +4072,6 @@ async fn context_window_downgrade_triggers_auto_compact() {
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-    auto_prompt_cache_key: false,
     };
 
     let h = TestHarness::with_config(vec![], config);
