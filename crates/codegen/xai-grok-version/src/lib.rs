@@ -1,5 +1,7 @@
 //! Installed grok CLI version, lockstepped with shipping binaries.
 
+use std::sync::OnceLock;
+
 use semver::Version;
 
 pub const TEST_VERSION_ENV: &str = "GROK_TEST_VERSION";
@@ -16,7 +18,25 @@ pub fn is_fork_build() -> bool {
     v.contains("-rev") || v.contains("+rev")
 }
 
-/// [`TEST_VERSION_ENV`] override first, then [`VERSION`].
+/// Runtime-injected `"<version> (<shortcommit>)"` string. Only the release
+/// binary stamps the commit hash in its own build.rs and injects it here at
+/// startup, so the big lib crates don't recompile on every commit.
+static FULL_VERSION: OnceLock<&'static str> = OnceLock::new();
+
+/// Inject the binary's stamped `"<version> (<shortcommit>)"` string.
+/// Idempotent: the first set wins, repeats are ignored.
+pub fn set_full_version(v: &'static str) {
+    let _ = FULL_VERSION.set(v);
+}
+
+/// The injected version-with-commit string, or plain [`VERSION`] when no
+/// binary has called [`set_full_version`] (e.g. lib tests, dev harnesses).
+pub fn full_version() -> &'static str {
+    FULL_VERSION.get().copied().unwrap_or(VERSION)
+}
+
+/// [`TEST_VERSION_ENV`] override first, then [`VERSION`]. Trimmed so
+/// non-semver-aware callers can pass the result straight into parsing.
 pub fn installed() -> String {
     std::env::var(TEST_VERSION_ENV)
         .map(|v| v.trim().to_string())
@@ -56,5 +76,14 @@ mod tests {
         }
         assert_eq!(display_version(""), VERSION);
         assert!(display_version(" [stable]").ends_with("[stable]"));
+    }
+
+    #[test]
+    fn full_version_falls_back_then_first_set_wins() {
+        assert_eq!(full_version(), VERSION);
+        set_full_version("first (aaaaaaa)");
+        assert_eq!(full_version(), "first (aaaaaaa)");
+        set_full_version("second (bbbbbbb)");
+        assert_eq!(full_version(), "first (aaaaaaa)");
     }
 }
