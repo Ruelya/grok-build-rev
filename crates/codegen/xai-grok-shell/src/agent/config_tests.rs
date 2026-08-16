@@ -1045,6 +1045,7 @@ fn test_model_entry(
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
         },
         api_key: api_key.map(|s| s.to_string()),
@@ -2118,6 +2119,7 @@ fn model_info_from_config_propagates_use_concise() {
         compaction_at_tokens: None,
         show_model_fingerprint: false,
         stream_tool_calls: None,
+        auto_prompt_cache_key: false,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2277,6 +2279,7 @@ fn model_info_from_config_propagates_agent_type() {
         compaction_at_tokens: None,
         show_model_fingerprint: false,
         stream_tool_calls: None,
+        auto_prompt_cache_key: false,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2728,6 +2731,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         compaction_at_tokens: None,
         show_model_fingerprint: false,
         stream_tool_calls: None,
+        auto_prompt_cache_key: false,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -6664,6 +6668,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             compaction_at_tokens: None,
             show_model_fingerprint: false,
             stream_tool_calls: None,
+            auto_prompt_cache_key: false,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
