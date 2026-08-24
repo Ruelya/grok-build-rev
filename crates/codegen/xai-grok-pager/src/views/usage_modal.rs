@@ -188,7 +188,7 @@ impl UsageInfoModalState {
             session_usage_text: None,
             billing_loading: false,
             billing_error: None,
-            fetch_nonce: 0,
+            fetch_nonce: Default::default(),
             session_id_rect: None,
             activity: None,
             session_fields: None,

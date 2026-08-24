@@ -1124,7 +1124,7 @@ impl ApiBackend {
         matches!(self, Self::Messages | Self::AnthropicMessages)
     }
 
-    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire.
+    /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert.
     ///
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     pub fn forwards_prompt_cache_key(&self) -> bool {

@@ -18,6 +18,9 @@ pub fn is_fork_build() -> bool {
     v.contains("-rev") || v.contains("+rev")
 }
 
+/// The release pipeline always injects `GROK_VERSION`; without it the build is from source.
+pub const IS_DEV_BUILD: bool = option_env!("GROK_VERSION").is_none();
+
 /// Runtime-injected `"<version> (<shortcommit>)"` string. Only the release
 /// binary stamps the commit hash in its own build.rs and injects it here at
 /// startup, so the big lib crates don't recompile on every commit.
