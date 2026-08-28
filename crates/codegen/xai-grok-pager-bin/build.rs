@@ -1,16 +1,34 @@
+use std::path::Path;
 use std::process::Command;
 
-fn main() {
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-env-changed=GROK_VERSION");
-
-    let commit = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+fn git_stdout(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
+}
+
+fn main() {
+    println!("cargo:rerun-if-env-changed=GROK_VERSION");
+
+    // Watch the git files that change on commit/checkout so the version stamp refreshes. Never
+    // emit a missing path: cargo treats it as always dirty and rebuilds this crate every build.
+    let mut watch_paths = Vec::new();
+    watch_paths.extend(git_stdout(&["rev-parse", "--git-path", "HEAD"]));
+    watch_paths.extend(git_stdout(&["rev-parse", "--git-path", "logs/HEAD"]));
+    if let Some(head_ref) = git_stdout(&["symbolic-ref", "-q", "HEAD"]) {
+        watch_paths.extend(git_stdout(&["rev-parse", "--git-path", &head_ref]));
+    }
+    for path in watch_paths.iter().filter(|p| Path::new(p).exists()) {
+        println!("cargo:rerun-if-changed={path}");
+    }
+
+    let commit = git_stdout(&["rev-parse", "HEAD"])
+        .map(|s| s.chars().take(12).collect::<String>())
+        .filter(|s| s.len() == 12)
         .unwrap_or_else(|| "unknown".to_string());
 
     let base = std::env::var("GROK_VERSION")
@@ -23,7 +41,7 @@ fn main() {
         format!("{base}-rev")
     };
 
-    // Example: "0.2.121-rev (079b9cb)"
+    // Example: "1.0.10-rev (079b9cbdead1)"
     println!("cargo:rustc-env=VERSION_WITH_COMMIT={version} ({commit})");
     if std::env::var_os("GROK_VERSION").is_none() {
         println!("cargo:rustc-env=GROK_VERSION={version}");

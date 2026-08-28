@@ -19,6 +19,7 @@ use crate::app::actions::{Action, DoctorFixTarget, Effect};
 use crate::app::agent::{AgentCommand, AgentId, AgentState};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView};
+use crate::app::cancel_latency::TurnEnd;
 use crate::notifications::{NotificationEvent, NotificationEventKind};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
@@ -184,16 +185,11 @@ pub(super) fn dispatch_send_prompt(app: &mut AppView, text: String) -> Vec<Effec
     )
 }
 
-/// Clear the active prompt and record non-empty text in prompt history (Esc Esc).
+/// Clear the active prompt into the stash (Esc Esc).
+///
+/// The draft goes to the stash, not the recall list. `Ctrl+S` is how it comes back.
 pub(super) fn dispatch_clear_prompt(app: &mut AppView) -> Vec<Effect> {
     with_active_agent(app, |agent| {
-        // Prefixed the way the stash entry is, or a `!` draft shows up twice in the Up browse.
-        let text = crate::app::agent_view::prompt_history_text(
-            agent.prompt.text(),
-            agent.prompt_input_mode,
-        );
-        crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
-
         // Recoverable with the stash chord, but Esc-Esc is a discard: it never comes back on its own.
         agent.stash_prompt_draft(crate::app::agent_view::StashCause::ClearedDraft);
     });
@@ -494,6 +490,12 @@ pub(super) fn dispatch_send_prompt_inner(
 
     let trimmed = text.trim();
 
+    // Recorded before the registry runs, because most command outcomes return on their own path.
+    let recorded_as_command = !literal && consume_input && trimmed.starts_with('/');
+    if recorded_as_command {
+        agent.record_prompt_in_history(trimmed);
+    }
+
     let mut effects = Vec::new();
 
     // ── Tier-restricted command upsell ─────────────────────────────
@@ -666,6 +668,20 @@ pub(super) fn dispatch_send_prompt_inner(
                 }
                 return dispatch(Action::ExitSession, app);
             }
+            CommandResult::Action(Action::EditPromptExternal) => {
+                // Typed slash input occupies the composer; the palette route preserves an existing draft.
+                if consume_input {
+                    agent.prompt.set_text("");
+                }
+                return dispatch(Action::EditPromptExternal, app);
+            }
+            CommandResult::Action(Action::SendRememberNote(note)) => {
+                if consume_input {
+                    agent.prompt.set_text("");
+                }
+                // The typed `/remember <text>` is the row already recorded above.
+                return super::notes::dispatch_send_remember_note_from_command(app, note);
+            }
             CommandResult::Action(mut action) => {
                 if consume_input {
                     // Inline `/feedback` composed alongside pasted images:
@@ -739,6 +755,10 @@ pub(super) fn dispatch_send_prompt_inner(
                     .enqueue_prompt_with_skill_tokens(pass_text, skill_token_ranges);
             }
         }
+        // Reaching here means the command queued or passed text through — a
+        // real submission. Local-UI commands returned above and must keep the
+        // hook-block hold.
+        agent.release_hook_block_hold();
         if consume_input {
             // Drain prompt images before clearing prompt state.
             drain_prompt_state_to_last_queued(agent);
@@ -781,6 +801,9 @@ pub(super) fn dispatch_send_prompt_inner(
         // `SendPrompt` (nothing can drain to an unbound session), so clearing the
         // chips here would lose the click with nothing submitted. Leaving them
         // shown preserves the suggestion for a retry once the session binds.
+        // A plain prompt is a real submission on every subpath below — the
+        // re-engagement that releases the hook-block hold.
+        agent.release_hook_block_hold();
         if is_follow_up && agent.session.session_id.is_some() {
             agent.clear_follow_ups();
         }
@@ -855,7 +878,7 @@ pub(super) fn dispatch_send_prompt_inner(
                 // up-arrow history (same as the local path's history insert).
                 agent.prompt.set_text("");
                 agent.note_draft_consumed();
-                crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
+                agent.record_prompt_in_history(&text);
             }
 
             // A new prompt is taking the wheel: the previous response's
@@ -923,8 +946,9 @@ pub(super) fn dispatch_send_prompt_inner(
         };
 
         // Skipped for modal-driven dispatch: the user didn't type these commands and shouldn't see them in up-arrow history.
-        if consume_input {
-            crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
+        // `PassThrough`, `QueueCommand` and `InjectSkill` reach here, so a command recorded above would land twice.
+        if consume_input && !recorded_as_command {
+            agent.record_prompt_in_history(&text);
         }
         maybe_drain_queue(agent)
     };
@@ -961,14 +985,12 @@ pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> 
     };
     // Submitting a bash command retires any edit-contextual ephemeral tip.
     agent.ephemeral_tip.clear_on_submit();
+    agent.release_hook_block_hold();
 
-    crate::app::agent::remember_prompt(
-        &mut agent.session.prompt_history,
-        &crate::app::agent_view::prompt_history_text(
-            &command,
-            crate::app::agent_view::PromptInputMode::Bash,
-        ),
-    );
+    agent.record_prompt_in_history(&crate::app::agent_view::prompt_history_text(
+        &command,
+        crate::app::agent_view::PromptInputMode::Bash,
+    ));
 
     // ── Server-authoritative immediate send for bash while running ──
     // A bash command typed while a turn is RUNNING is sent to the agent
@@ -1214,6 +1236,20 @@ pub(super) fn handle_prompt_response(
                 .as_str()
                 .map(str::to_string)
         });
+        let wire_cancellation_context = result.as_ref().ok().and_then(|pr| {
+            pr.meta
+                .as_ref()?
+                .get(crate::app::turn_completion::CANCELLATION_CONTEXT_KEY)
+                .cloned()
+        });
+        crate::app::turn_completion::note_hook_blocked_turn(
+            agent,
+            // A reply without the server-stamped id still names this client's
+            // own request: never leave the self/foreign check without an id.
+            response_pid.as_deref().or(prompt_id.as_deref()),
+            wire_cancellation_category.as_deref(),
+            wire_cancellation_context.as_ref(),
+        );
         let rate_limited = agent.session.rate_limited;
         // Fallback mirroring the credit-limit race guard below: if the retry
         // notification lost the race with (or never reached) this
@@ -1338,19 +1374,7 @@ pub(super) fn handle_prompt_response(
 
         // Insert session event message (skip TurnCompleted for bash-mode — no agent turn).
         let event = match (&result, was_cancelling) {
-            // Send-now cancel: no marker (the new prompt is the next turn); the
-            // `None` still flushes any held stop hooks standalone.
-            (Ok(_), true) if send_now_cancel => None,
-            (Ok(_), true) => Some(crate::app::turn_completion::cancelled_turn_event(
-                wire_cancellation_category.as_deref(),
-                elapsed.unwrap_or_default(),
-            )),
             (Ok(_), false) if agent.bash_turn => None,
-            (Ok(_), false) => Some(SessionEvent::TurnCompleted {
-                // Legacy copy on purpose: unknown elapsed keeps the "in 0.0s"
-                // form here — only wake markers use the honest `None` form.
-                elapsed: Some(elapsed.unwrap_or_default()),
-            }),
             (Err(_), _) if dedicated_ux_shown => None,
             // `err` is already banner-formatted by `format_acp_error` at the
             // producer — the single formatting owner. Don't re-format here.
@@ -1358,6 +1382,23 @@ pub(super) fn handle_prompt_response(
                 error: err.clone(),
                 elapsed,
             }),
+            (Ok(_), _) => {
+                let stop = if was_cancelling {
+                    crate::app::turn_completion::TurnStopReason::Cancelled
+                } else {
+                    crate::app::turn_completion::TurnStopReason::EndTurn
+                };
+                crate::app::turn_completion::terminal_marker(
+                    crate::app::turn_completion::TerminalMarkerInput {
+                        stop,
+                        elapsed_ms: crate::app::turn_completion::duration_to_elapsed_ms(elapsed),
+                        agent_result: None,
+                        send_now_cancel,
+                        cancellation_category: wire_cancellation_category.as_deref(),
+                        error_banner_present: false,
+                    },
+                )
+            }
         };
         crate::app::turn_completion::push_turn_terminal_marker(
             agent,
@@ -1381,7 +1422,7 @@ pub(super) fn handle_prompt_response(
             _ => None,
         };
 
-        agent.mark_turn_finished();
+        agent.mark_turn_finished(TurnEnd::Completed);
         agent.activity_started_at = None;
         agent.last_activity = None;
 
@@ -1655,7 +1696,7 @@ pub(super) fn handle_compact_complete(
             }
         }
 
-        agent.mark_turn_finished();
+        agent.mark_turn_finished(TurnEnd::Completed);
         agent.activity_started_at = None;
         agent.last_activity = None;
 

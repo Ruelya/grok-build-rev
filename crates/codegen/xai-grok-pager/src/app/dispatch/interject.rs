@@ -52,13 +52,14 @@ pub(super) fn dispatch_interject_on(
     // even when there is no active session, matching the prompt/bash/
     // feedback/remember paths.
     agent.ephemeral_tip.clear_on_submit();
+    agent.release_hook_block_hold();
 
     let Some(session_id) = agent.session.session_id.clone() else {
         agent.show_toast(NO_SESSION_NOTICE);
         return vec![];
     };
 
-    crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
+    agent.record_prompt_in_history(&text);
 
     // Push a standard user prompt block locally for instant feedback, and
     // record its id so the broadcast echo (`x.ai/session/interjection`) is
@@ -114,6 +115,7 @@ pub(super) fn dispatch_send_prompt_now(
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
+    agent.release_hook_block_hold();
 
     // Mid-outage guard (mirrors the plain prompt path): the producers already
     // consumed the payload (composer text / queue row), so requeue it locally
@@ -144,7 +146,7 @@ pub(super) fn dispatch_send_prompt_now(
         return vec![];
     };
 
-    crate::app::agent::remember_prompt(&mut agent.session.prompt_history, &text);
+    agent.record_prompt_in_history(&text);
 
     let prompt_id = uuid::Uuid::new_v4().to_string();
     // Self-originated: the ACP gate must treat this prompt's deltas as ours.

@@ -937,9 +937,9 @@ fn run_pending_mode_switch(
     ) {
         crate::app::mode_switch::ModeSwitchOutcome::Switched => {
             crate::app::mode_switch::reseed_screen_mode(app, target);
-            // Disarm in minimal or the command keeps running for an unpainted row.
+            // Re-armed so the switch cannot fire a stale deadline.
             *status_line_refresh_interval =
-                if super::status_line::draws_a_row(app.screen_mode, &app.current_ui.status_line) {
+                if super::status_line::draws_a_row(&app.current_ui.status_line) {
                     app.status_line_refresh_interval()
                 } else {
                     None
@@ -1047,6 +1047,7 @@ pub(crate) async fn run(
     terminal: &mut PagerTerminal,
     connection: crate::acp::AcpConnection,
     pending_startup: xai_grok_telemetry::startup::PendingStartup,
+    tracing_handle: crate::tracing::TracingHandle,
     config_watcher: &mut ConfigWatcher,
     args: &PagerArgs,
     session_cwd: Option<std::path::PathBuf>,
@@ -1058,16 +1059,6 @@ pub(crate) async fn run(
     >,
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<crate::render::draw::WriterEvent>,
 ) -> anyhow::Result<RunResult> {
-    // Initialize tracing capture. The channel `rx` will be wired to a
-    // TracingModel (and ultimately a tracing pane) once integrated.
-    // For now we drain-and-discard in `AppView::tick()` to avoid unbounded
-    // memory growth.
-    if args.log_sampling {
-        // SAFETY: called before any threads are spawned by init_tracing.
-        unsafe { std::env::set_var("GROK_LOG_SAMPLING", "1") };
-    }
-    let tracing_handle = crate::tracing::init_tracing();
-
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::AppInit);
@@ -1112,13 +1103,13 @@ pub(crate) async fn run(
         remote_permission_mode,
     );
     app.default_yolo = launch_yolo.yolo;
-    // Gated launch-auto (CLI `--permission-mode auto`, config, or the
-    // interactive soft default when nothing selects a mode). Hoisted so it can
-    // be re-applied after `load_initial_ui_config()` replaces `current_ui` below.
-    let launch_auto = xai_grok_shell::util::config::effective_auto_for_launch_interactive(
+    // Hoisted so it can be re-applied after `load_initial_ui_config()` replaces
+    // `current_ui` below.
+    let launch_auto = xai_grok_shell::util::config::effective_auto_for_launch(
         args.yolo,
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
+        xai_grok_shell::util::config::default_interactive_permission_mode(),
     );
     if launch_auto {
         app.current_ui.permission_mode = Some("auto".into());
@@ -1661,10 +1652,9 @@ pub(crate) async fn run(
     // stays sans-IO.
     app.current_ui = load_initial_ui_config();
     // Here rather than from the row's own update: that runs only once an agent
-    // view is on screen, so a minimal-mode or welcome-only session would be
-    // missing from the denominator adoption is measured against.
-    crate::app::status_line::metrics::global()
-        .report_config(&app.current_ui.status_line, app.screen_mode);
+    // view is on screen, so a welcome-only session would be missing from the
+    // denominator adoption is measured against.
+    crate::app::status_line::metrics::global().report_config(&app.current_ui.status_line);
     // Field-tolerant: a whole-`UiConfig` default (malformed unrelated `[ui]`
     // field) must not wipe a valid `show_timeline` or leave appearance /
     // cache / `current_ui` disagreeing — `/timeline` and the rail all read
@@ -1947,10 +1937,10 @@ pub(crate) async fn run(
 
     // `[ui.status_line] refresh_interval`: re-runs a command row on a timer.
     // Read once, like the section it comes from, so a future config reload
-    // must run this arming again; unarmed while the current mode cannot draw
-    // the row. Re-derived on a mode switch (`run_pending_mode_switch`).
+    // must run this arming again; unarmed while the config reserves no row.
+    // Re-derived on a mode switch (`run_pending_mode_switch`).
     let mut status_line_refresh_interval: Option<Duration> =
-        if super::status_line::draws_a_row(app.screen_mode, &app.current_ui.status_line) {
+        if super::status_line::draws_a_row(&app.current_ui.status_line) {
             app.status_line_refresh_interval()
         } else {
             None
@@ -2242,6 +2232,12 @@ pub(crate) async fn run(
     // land in the same batch.
     let mut csi_filter = super::csi_filter::CsiFragmentFilter::new();
 
+    // Persistent X10 reassembly filter — recombines mouse reports whose
+    // column byte a UTF-8-converting relay expanded (ConPTY/WSL), which
+    // crossterm mis-parses into a magic-shape mouse event plus a stray
+    // typed character.
+    let mut x10_filter = super::x10_filter::X10ReassemblyFilter::new();
+
     // Swallows the fire-and-forget XTVERSION reply whenever it arrives;
     // armed only when the startup query is still unanswered.
     let mut xt_filter = super::xt_filter::XtversionFilter::new();
@@ -2257,6 +2253,10 @@ pub(crate) async fn run(
     // Registered so the signal handler can request a graceful quit; see signal_handler.
     let quit_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     crate::app::signal_handler::set_quit_notify(quit_notify.clone());
+
+    let mut stall_rollup =
+        super::event_loop_stall::StallRollup::new(super::event_loop_stall::STALL_REPORT_WINDOW);
+    let loop_entry = std::time::Instant::now();
 
     loop {
         if !session_load_barrier.is_empty() && acp_peek.is_none() {
@@ -2297,6 +2297,11 @@ pub(crate) async fn run(
             break;
         }
 
+        let workspace_effects = super::workspace_sync::drain(&mut app);
+        if process_effects(workspace_effects, &mut tasks, &mut app, &progress_tx) {
+            break;
+        }
+
         if let Err(e) = run_pending_suspends(
             &mut app,
             terminal,
@@ -2308,6 +2313,7 @@ pub(crate) async fn run(
             &mut suspend_wait_reports,
         ) {
             app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+            flush_pending_stall(&mut stall_rollup);
             return Err(e);
         }
 
@@ -2410,7 +2416,10 @@ pub(crate) async fn run(
         // closed→open transition rather than every iteration. Applies in both
         // modes: leader mode polls the live roster, non-leader mode polls the
         // local on-disk idle-session list.
-        if roster_poll_at.is_none() && matches!(app.active_view, ActiveView::AgentDashboard) {
+        if !app.workspace_dashboard_enabled
+            && roster_poll_at.is_none()
+            && matches!(app.active_view, ActiveView::AgentDashboard)
+        {
             roster_poll_at = Some(Instant::now());
         }
 
@@ -2537,6 +2546,14 @@ pub(crate) async fn run(
             }
         };
 
+        let stall_flush_at = stall_rollup.deadline().map(tokio::time::Instant::from_std);
+        let stall_flush = async {
+            match stall_flush_at {
+                Some(at) => sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             biased;
 
@@ -2558,6 +2575,7 @@ pub(crate) async fn run(
             writer_event = writer_event_rx.recv() => {
                 let Some(writer_event) = writer_event else {
                     app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                    flush_pending_stall(&mut stall_rollup);
                     return Err(anyhow::anyhow!("terminal writer stopped"));
                 };
                 let sequence = match writer_event_sequence(writer_event)
@@ -2566,6 +2584,7 @@ pub(crate) async fn run(
                     Ok(sequence) => sequence,
                     Err(e) => {
                         app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                        flush_pending_stall(&mut stall_rollup);
                         return Err(e);
                     }
                 };
@@ -2614,10 +2633,11 @@ pub(crate) async fn run(
                     if !app.pending_effects.is_empty() {
                         let effs = std::mem::take(&mut app.pending_effects);
                         if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-                            return Ok(finish_run(&mut app));
+                            return Ok(finish_run_with_stall_flush(&mut app, &mut stall_rollup));
                         }
                     }
                 }
+                super::workspace_sync::request(&mut app);
 
                 // A snapshot inside the refresh floor changes nothing yet but
                 // still owes a run, and the arm below arms the tick only on a
@@ -2728,13 +2748,21 @@ pub(crate) async fn run(
             }
 
             maybe_ev = input_rx.recv() => {
-                // Terminal events arrive via the dedicated reader thread set up
-                // near the top of this function. `None` means that thread ended.
+                // `None` means the dedicated terminal reader thread has ended.
                 let Some(ev) = maybe_ev else { break };
+                let handled_at = std::time::Instant::now();
+                let waited =
+                    super::event_loop_stall::input_wait(ev.arrived_at, handled_at, loop_entry);
+                let stall_activity = super::event_loop_stall::StallActivity::read();
                 let result = drain_and_process(
                     ev, &mut input_rx, &mut app, &mut tasks, &progress_tx,
-                    &mut csi_filter, &mut xt_filter,
+                    &mut csi_filter, &mut x10_filter, &mut xt_filter,
                 ).await;
+                if let Some(window) =
+                    stall_rollup.observe(waited, stall_activity, result.handled, handled_at)
+                {
+                    emit_event_loop_stall(window);
+                }
                 if result.should_quit {
                     break;
                 }
@@ -2772,6 +2800,8 @@ pub(crate) async fn run(
                 // Sync appearance watcher when auto-mode toggles.
                 sync_appearance_watcher(&mut appearance_watcher);
             }
+
+            _ = stall_flush => {}
 
             // Debounced resize: draw once the terminal size has stabilized.
             _ = resize_debounce => {
@@ -2895,7 +2925,7 @@ pub(crate) async fn run(
                 // roster; outside leader mode we poll the local on-disk
                 // idle-session list so the dashboard still shows idle sessions.
                 let dashboard_open = matches!(app.active_view, ActiveView::AgentDashboard);
-                if dashboard_open {
+                if dashboard_open && !app.workspace_dashboard_enabled {
                     let eff = if leader_status_rx.is_some() {
                         Effect::FetchRoster
                     } else {
@@ -3299,7 +3329,7 @@ pub(crate) async fn run(
                 if active_restored {
                     let drain_effects = dispatch::dispatch(Action::DrainQueue, &mut app);
                     if process_effects(drain_effects, &mut tasks, &mut app, &progress_tx) {
-                        return Ok(finish_run(&mut app));
+                        return Ok(finish_run_with_stall_flush(&mut app, &mut stall_rollup));
                     }
                 }
 
@@ -3354,6 +3384,11 @@ pub(crate) async fn run(
             }
         }
 
+        // Flush after observing, not as a select arm, so it can neither starve nor split a boundary stall.
+        if let Some(window) = stall_rollup.take_if_elapsed(std::time::Instant::now()) {
+            emit_event_loop_stall(window);
+        }
+
         // Whatever the arm above queued, run it before painting. An arm may
         // still drain inline when it needs the effects applied sooner.
         if !app.pending_effects.is_empty() {
@@ -3365,6 +3400,8 @@ pub(crate) async fn run(
 
         presenter.present_if_dirty(&mut app, terminal);
     }
+
+    flush_pending_stall(&mut stall_rollup);
 
     app.notification_service.shutdown();
 
@@ -3530,6 +3567,26 @@ fn sync_appearance_watcher(watcher: &mut Option<SystemAppearanceWatcher>) {
     }
 }
 
+fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {
+    xai_grok_telemetry::session_ctx::log_event(super::event_loop_stall::event_loop_stall_event(
+        window,
+    ));
+}
+
+fn flush_pending_stall(stall_rollup: &mut super::event_loop_stall::StallRollup) {
+    if let Some(window) = stall_rollup.take() {
+        emit_event_loop_stall(window);
+    }
+}
+
+fn finish_run_with_stall_flush(
+    app: &mut AppView,
+    stall_rollup: &mut super::event_loop_stall::StallRollup,
+) -> RunResult {
+    flush_pending_stall(stall_rollup);
+    finish_run(app)
+}
+
 /// Exit funnel: releases the startup obligation and builds [`ExitInfo`].
 /// Summaries are fullscreen-only and always read the root agent.
 fn finish_run(app: &mut AppView) -> RunResult {
@@ -3574,6 +3631,9 @@ struct DrainResult {
     /// Whether the next draw must be preceded by a full clear+repaint, set on
     /// refocus in editor/multiplexer contexts to heal out-of-band stranded rows.
     force_repaint: bool,
+    /// Count of coalesced events processed in this drain batch, summed into the
+    /// stall window's `events_handled`.
+    handled: u32,
 }
 
 struct RoutedInputEvent {
@@ -3623,9 +3683,11 @@ fn normalize_input_event(timed: TimedInputEvent) -> RoutedInputEvent {
 /// of sequential draws, freezing the UI for seconds or minutes.
 ///
 /// Runs [`coalesce_rapid_keys`] and the persistent
-/// [`CsiFragmentFilter`](super::csi_filter::CsiFragmentFilter) before
+/// [`CsiFragmentFilter`](super::csi_filter::CsiFragmentFilter) and
+/// [`X10ReassemblyFilter`](super::x10_filter::X10ReassemblyFilter) before
 /// processing to fix paste on terminals without bracketed paste (e.g.
-/// Windows PowerShell) and filter leaked CSI fragments (SGR mouse and focus reports).
+/// Windows PowerShell), filter leaked CSI fragments (SGR mouse and focus
+/// reports), and recombine relay-mangled X10 mouse reports.
 async fn drain_and_process(
     first: TimedInputEvent,
     input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TimedInputEvent>,
@@ -3633,6 +3695,7 @@ async fn drain_and_process(
     tasks: &mut JoinSet<TaskResult>,
     progress_tx: &tokio::sync::mpsc::UnboundedSender<effects::RestoreProgressMsg>,
     csi_filter: &mut super::csi_filter::CsiFragmentFilter,
+    x10_filter: &mut super::x10_filter::X10ReassemblyFilter,
     xt_filter: &mut super::xt_filter::XtversionFilter,
 ) -> DrainResult {
     let mut needs_draw = false;
@@ -3673,16 +3736,30 @@ async fn drain_and_process(
         coalesce_rapid_keys(raw_events)
     };
     let coalesced = csi_filter.filter(coalesced);
+    let coalesced = x10_filter.filter(coalesced);
     let coalesced = coalesced
         .into_iter()
         .map(normalize_input_event)
         .collect::<Vec<_>>();
+
+    let mut handled: u32 = 0;
 
     let suspend_armed_after_event = std::cell::Cell::new(false);
     let mut handle_one = |routed: &RoutedInputEvent| -> bool {
         let ev = &routed.event;
         match ev {
             Event::FocusGained => {
+                // Re-assert mouse capture on refocus: ConPTY-backed relays
+                // (VS Code on Windows hosting a WSL/SSH session) can strip DEC
+                // private modes, silently downgrading mouse reports from SGR
+                // to legacy X10 — whose >= 95-column coordinate bytes then
+                // corrupt into typed characters. Idempotent everywhere else,
+                // and gated so a deliberate capture-off state is never undone.
+                if crate::app::MOUSE_CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Acquire) {
+                    xai_grok_shell::util::with_locked_stderr(|stderr| {
+                        let _ = crossterm::execute!(stderr, crossterm::event::EnableMouseCapture);
+                    });
+                }
                 // Force a full repaint on refocus to heal out-of-band stranded rows.
                 // Sets needs_draw (not had_non_resize_change); the draw site honors force_repaint
                 // ahead of the resize debounce, clearing even a coalesced same-size resize.
@@ -3881,12 +3958,14 @@ async fn drain_and_process(
     };
 
     for routed in &coalesced {
+        handled = handled.saturating_add(1);
         if handle_one(routed) {
             return DrainResult {
                 needs_draw,
                 should_quit: true,
                 resize_only: false,
                 force_repaint: false,
+                handled,
             };
         }
         // Hand off to the TTY-taking child before later buffered events mutate UI state.
@@ -3900,6 +3979,7 @@ async fn drain_and_process(
         should_quit: false,
         resize_only: had_resize && !had_non_resize_change,
         force_repaint,
+        handled,
     }
 }
 
@@ -4011,6 +4091,18 @@ fn is_pasteable_key_event(ev: &Event) -> bool {
     }
 }
 
+/// A pasted line feed (`\n`, 0x0A). In raw mode crossterm parses a bare LF as
+/// `Ctrl+J` (0x0A is the control code for `j`), while a real Enter keypress is
+/// a carriage return (`\r`) parsed as [`KeyCode::Enter`]. So an `Enter`
+/// immediately followed by this is a pasted CRLF line break, not a submit —
+/// see [`coalesce_rapid_keys`].
+fn is_paste_lf(ev: &Event) -> bool {
+    matches!(ev, Event::Key(ke)
+        if ke.kind == KeyEventKind::Press
+            && ke.code == KeyCode::Char('j')
+            && ke.modifiers == KeyModifiers::CONTROL)
+}
+
 /// Map a voice-chord key event to its action (pure, so it's unit-testable).
 ///
 /// Hold mode is press-to-record / release-to-stop, but only a hold-*owned*
@@ -4077,9 +4169,13 @@ fn is_voice_chord(ke: &KeyEvent) -> bool {
 /// A contiguous run of character/Enter/Tab events is replaced with a
 /// single `Event::Paste` when EITHER:
 ///
-/// 1. `>= PASTE_COALESCE_THRESHOLD` events AND at least one Enter is
-///    followed by more characters (distinguishes `type + submit` from
-///    `pasted multiline`).
+/// 1. `>= PASTE_COALESCE_THRESHOLD` events AND an Enter is followed by more
+///    characters (unambiguous multi-line paste), OR the run contains a
+///    carriage-return/line-feed pair (an `Enter` immediately followed by
+///    [`is_paste_lf`]). A pasted Windows line break arrives as CRLF —
+///    `Enter` (`\r`) then `Ctrl+J` (`\n`) — whereas a real Enter keypress is
+///    a lone `\r`, so this coalesces the paste (e.g. `"foo\r\n"`) without
+///    swallowing a genuine submit.
 /// 2. **Windows only:** `>= PATH_COALESCE_THRESHOLD` events AND the
 ///    assembled text starts with a drag-drop-style path anchor. Some
 ///    Windows Terminal versions deliver dropped paths as keystrokes
@@ -4128,34 +4224,53 @@ fn coalesce_rapid_keys(events: Vec<TimedInputEvent>) -> Vec<TimedInputEvent> {
             let mut text = String::new();
             let mut seen_enter = false;
             let mut has_char_after_enter = false;
+            // An Enter (`\r`) immediately followed by a pasted LF (`\n`): the
+            // CRLF signature of a pasted Windows line break, never a submit.
+            let mut has_crlf = false;
+            let mut prev_was_enter = false;
 
-            while i < events.len() && is_pasteable_key_event(&events[i].event) {
-                if let Event::Key(ke) = &events[i].event {
-                    match ke.code {
-                        KeyCode::Char(c) => {
-                            text.push(c);
-                            if seen_enter {
-                                has_char_after_enter = true;
+            while i < events.len() {
+                if is_pasteable_key_event(&events[i].event) {
+                    if let Event::Key(ke) = &events[i].event {
+                        match ke.code {
+                            KeyCode::Char(c) => {
+                                text.push(c);
+                                if seen_enter {
+                                    has_char_after_enter = true;
+                                }
+                                prev_was_enter = false;
                             }
-                        }
-                        KeyCode::Enter => {
-                            text.push('\n');
-                            seen_enter = true;
-                        }
-                        KeyCode::Tab => {
-                            text.push('\t');
-                            if seen_enter {
-                                has_char_after_enter = true;
+                            KeyCode::Enter => {
+                                text.push('\n');
+                                seen_enter = true;
+                                prev_was_enter = true;
                             }
+                            KeyCode::Tab => {
+                                text.push('\t');
+                                if seen_enter {
+                                    has_char_after_enter = true;
+                                }
+                                prev_was_enter = false;
+                            }
+                            _ => unreachable!("is_pasteable_key_event guards this"),
                         }
-                        _ => unreachable!("is_pasteable_key_event guards this"),
                     }
+                    i += 1;
+                } else if prev_was_enter && is_paste_lf(&events[i].event) {
+                    // LF half of a pasted CRLF: the preceding Enter already
+                    // pushed '\n', so absorb this without a second newline and
+                    // without letting it reach its Ctrl+J binding.
+                    has_crlf = true;
+                    prev_was_enter = false;
+                    i += 1;
+                } else {
+                    break;
                 }
-                i += 1;
             }
 
             let run_len = i - run_start;
-            let multiline_paste = run_len >= PASTE_COALESCE_THRESHOLD && has_char_after_enter;
+            let multiline_paste =
+                (run_len >= PASTE_COALESCE_THRESHOLD && has_char_after_enter) || has_crlf;
             // Windows fallback for drag-drops that arrive as a key
             // burst instead of a bracketed paste — reuse the drop
             // classifier's anchor detector so the two layers can't
@@ -4787,6 +4902,7 @@ mod tests {
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tasks = JoinSet::new();
         let mut csi_filter = super::super::csi_filter::CsiFragmentFilter::new();
+        let mut x10_filter = super::super::x10_filter::X10ReassemblyFilter::new();
         let mut xt_filter = super::super::xt_filter::XtversionFilter::new();
 
         let result = drain_and_process(
@@ -4796,6 +4912,7 @@ mod tests {
             &mut tasks,
             &progress_tx,
             &mut csi_filter,
+            &mut x10_filter,
             &mut xt_filter,
         )
         .await;
@@ -4808,6 +4925,49 @@ mod tests {
         assert_eq!(
             app.agents[&crate::app::agent::AgentId(0)].prompt.text(),
             "fix the bug"
+        );
+    }
+
+    #[tokio::test]
+    async fn handled_counts_only_events_processed_before_suspend_break() {
+        let mut app = crate::app::app_view::tests::test_app();
+        app.pending_editor = Some(
+            crate::app::external_editor::PendingEditorRequest::PromptDraft {
+                agent_id: crate::app::agent::AgentId(0),
+                original_text: "draft".to_owned(),
+            },
+        );
+        let (acp_tx, _acp_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.acp_tx = acp_tx;
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = input_tx.send(press(KeyCode::Char('b')));
+        let _ = input_tx.send(press(KeyCode::Char('c')));
+        drop(input_tx);
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tasks = JoinSet::new();
+        let mut csi_filter = super::super::csi_filter::CsiFragmentFilter::new();
+        let mut x10_filter = super::super::x10_filter::X10ReassemblyFilter::new();
+        let mut xt_filter = super::super::xt_filter::XtversionFilter::new();
+
+        let result = drain_and_process(
+            press(KeyCode::Char('a')),
+            &mut input_rx,
+            &mut app,
+            &mut tasks,
+            &progress_tx,
+            &mut csi_filter,
+            &mut x10_filter,
+            &mut xt_filter,
+        )
+        .await;
+
+        assert!(
+            !result.should_quit,
+            "the armed suspend breaks the batch, it does not quit"
+        );
+        assert_eq!(
+            result.handled, 1,
+            "only the first event ran before the suspend break; the two-event tail is unhandled"
         );
     }
 
@@ -5818,7 +5978,8 @@ mod tests {
 
     #[test]
     fn coalesce_type_then_submit_not_coalesced() {
-        // Enter is the LAST event — "type + submit", not paste.
+        // Enter is the LAST event with no trailing LF — a real submit
+        // (lone `\r`), not a paste. Must pass through so Enter sends.
         let events = vec![
             press(KeyCode::Char('a')),
             press(KeyCode::Char('b')),
@@ -5828,6 +5989,55 @@ mod tests {
         let result = coalesce_rapid_keys(events);
         assert_eq!(result.len(), 4);
         assert!(matches!(&result[3].event, Event::Key(ke) if ke.code == KeyCode::Enter));
+    }
+
+    #[test]
+    fn coalesce_crlf_paste_ending_in_newline_is_paste() {
+        // Windows paste of "foo\r\n": Enter (`\r`) then Ctrl+J (`\n`). The
+        // CRLF pair marks a paste, so the trailing Enter inserts as text
+        // instead of submitting.
+        let events = vec![
+            press(KeyCode::Char('f')),
+            press(KeyCode::Char('o')),
+            press(KeyCode::Char('o')),
+            press(KeyCode::Enter),
+            press_ctrl(KeyCode::Char('j')),
+        ];
+        let result = coalesce_rapid_keys(events);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].event, Event::Paste("foo\n".to_string()));
+    }
+
+    #[test]
+    fn coalesce_crlf_multiline_collapses_pairs() {
+        // "a\r\nb\r\n" → each Enter+Ctrl+J is one newline; no doubled blanks.
+        let events = vec![
+            press(KeyCode::Char('a')),
+            press(KeyCode::Enter),
+            press_ctrl(KeyCode::Char('j')),
+            press(KeyCode::Char('b')),
+            press(KeyCode::Enter),
+            press_ctrl(KeyCode::Char('j')),
+        ];
+        let result = coalesce_rapid_keys(events);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].event, Event::Paste("a\nb\n".to_string()));
+    }
+
+    #[test]
+    fn coalesce_lone_ctrl_j_not_after_enter_preserved() {
+        // A deliberate Ctrl+J (file-search "down") is not part of a CRLF and
+        // must reach its binding: not absorbed, run does not coalesce.
+        let events = vec![
+            press(KeyCode::Char('a')),
+            press(KeyCode::Char('b')),
+            press_ctrl(KeyCode::Char('j')),
+        ];
+        let result = coalesce_rapid_keys(events);
+        assert_eq!(result.len(), 3);
+        assert!(matches!(&result[2].event,
+            Event::Key(ke) if ke.code == KeyCode::Char('j')
+                && ke.modifiers == KeyModifiers::CONTROL));
     }
 
     #[test]
@@ -6112,8 +6322,8 @@ mod tests {
 
     #[test]
     fn coalesce_mouse_breaks_key_run_preserves_events() {
-        // A genuine paste batch that also collected mouse events.
-        // The paste chars should still coalesce; mouse events are preserved.
+        // A mouse event splits a key run. [a, b, Enter] has a trailing Enter
+        // with no LF → a submit, not coalesced; then [mouse], then [c].
         use crossterm::event::{MouseEvent, MouseEventKind};
         let events = vec![
             press(KeyCode::Char('a')),
@@ -6128,9 +6338,6 @@ mod tests {
             press(KeyCode::Char('c')),
         ];
         let result = coalesce_rapid_keys(events);
-        // The mouse event breaks the key run: [a, b, Enter] (3 keys, but
-        // Enter is last in that sub-run → no char after Enter → not coalesced),
-        // then [mouse], then [c] (1 key).
         assert_eq!(result.len(), 5);
     }
 

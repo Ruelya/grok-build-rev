@@ -14,9 +14,12 @@ pub mod agent;
 pub mod agent_view;
 pub mod app_view;
 pub mod bundle;
+pub(crate) mod cancel_latency;
 pub mod cli;
 pub mod consent;
 pub use crate::link_opener;
+use xai_grok_telemetry::region;
+use xai_grok_telemetry::region::Parent;
 /// Off-thread full-file syntax highlight upgrade for edit diffs.
 pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
@@ -38,8 +41,10 @@ pub(crate) mod status_line;
 mod status_line_policy;
 pub mod subagent;
 pub mod subscription;
+mod x10_filter;
 pub(crate) use effects::sanitize_user_error;
 mod event_loop;
+mod event_loop_stall;
 mod exit_timeout;
 pub(crate) mod external_editor;
 mod foreign_sessions;
@@ -55,6 +60,7 @@ mod session_load_barrier;
 pub mod signal_handler;
 mod startup_failure;
 mod turn_completion;
+pub(crate) mod workspace_sync;
 mod xt_filter;
 pub(crate) use crate::terminal::{kitty_flags_pushed, kitty_releases_reported};
 pub use cli::{
@@ -548,6 +554,7 @@ pub fn join_early_prefetch(
             Err(_) => None,
         };
     }
+    let _wait_span = region!("startup.prefetch_join_wait", Parent::Inherit);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(handle.join());
@@ -681,7 +688,12 @@ pub async fn run(
     if let Ok(cwd) = std::env::current_dir() {
         crate::git_info::populate_from_cwd_async(cwd);
     }
+    let prefetch_wait_started = std::time::Instant::now();
+    let had_prefetch = early_prefetch.is_some();
     let remote_settings = join_early_prefetch(early_prefetch);
+    if had_prefetch {
+        xai_grok_telemetry::startup::record_prefetch_wait(prefetch_wait_started.elapsed());
+    }
     xai_grok_shell::util::config::cache_remote_auto_mode(
         remote_settings.as_ref().and_then(|s| s.auto_mode.clone()),
     );
@@ -819,10 +831,11 @@ pub async fn run(
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
     );
-    let launch_auto = xai_grok_shell::util::config::effective_auto_for_launch_interactive(
+    let launch_auto = xai_grok_shell::util::config::effective_auto_for_launch(
         args.yolo,
         args.permission_mode_flag.as_deref(),
         remote_permission_mode,
+        xai_grok_shell::util::config::default_interactive_permission_mode(),
     );
     let mut connect_flags = crate::acp::ConnectFlags {
         subagents: !args.no_subagents,
@@ -959,6 +972,10 @@ pub async fn run(
             },
         ),
     );
+    if args.log_sampling {
+        unsafe { std::env::set_var("GROK_LOG_SAMPLING", "1") };
+    }
+    let tracing_handle = crate::tracing::init_tracing();
     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
     let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
     let primary_started = std::time::Instant::now();
@@ -1054,6 +1071,7 @@ pub async fn run(
         &mut terminal,
         connection,
         pending_startup,
+        tracing_handle,
         &mut config_watcher,
         &effective_args,
         session_cwd,

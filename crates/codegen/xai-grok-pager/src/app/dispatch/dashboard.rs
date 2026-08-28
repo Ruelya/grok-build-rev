@@ -22,7 +22,9 @@ use crate::app::actions::{Action, Effect, PermissionModeKind};
 use crate::app::agent::{AgentId, DeferredModelSwitch};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, DashboardReturn, TrustState};
+use crate::app::cancel_latency::CancelOrigin;
 use agent_client_protocol as acp;
+use xai_grok_telemetry::events::CancellationScope;
 
 // ---------------------------------------------------------------------------
 // Agent Dashboard dispatchers
@@ -239,6 +241,19 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
     configure_dashboard_state(app);
     app.active_view = ActiveView::AgentDashboard;
     log_dashboard_opened(app);
+    if app.workspace_dashboard_enabled {
+        app.dashboard_sessions_loading = app.workspace_snapshot.is_none();
+        crate::app::workspace_sync::request(app);
+        if app.workspace_store.is_some()
+            || app.workspace_store_loading
+            || app.workspace_write_in_flight
+        {
+            return vec![];
+        }
+        app.workspace_store_loading = true;
+        let db_path = xai_grok_dashboard_store::default_db_path(&xai_grok_config::grok_home());
+        return vec![Effect::LoadWorkspaceSnapshot { db_path }];
+    }
     app.dashboard_sessions_loading = true;
     if app.leader_mode {
         return vec![Effect::FetchRoster];
@@ -263,7 +278,8 @@ fn dashboard_alive_fn(
         // Roster-only rows are not locally hosted; they aren't tracked by
         // `agents` and are never persisted, so treat them as not alive for
         // pinned/reorder GC purposes.
-        crate::views::dashboard::DashboardRowId::Roster { .. } => false,
+        crate::views::dashboard::DashboardRowId::Roster { .. }
+        | crate::views::dashboard::DashboardRowId::Workspace { .. } => false,
     }
 }
 
@@ -465,6 +481,7 @@ pub(super) fn dispatch_dashboard_attach(
             }
             return effects;
         }
+        DashboardRowId::Workspace { .. } => return vec![],
     }
     vec![]
 }
@@ -630,7 +647,7 @@ pub(super) fn dispatch_dashboard_toggle_auto_approve(app: &mut AppView) -> Vec<E
     let agent_id = match selected {
         DashboardRowId::TopLevel(id) => *id,
         DashboardRowId::Subagent { parent, .. } => *parent,
-        DashboardRowId::Roster { .. } => return vec![],
+        DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => return vec![],
     };
     if !app.agents.contains_key(&agent_id) {
         if let Some(d) = app.dashboard.as_mut() {
@@ -1123,19 +1140,38 @@ pub(super) fn dispatch_dashboard_overlay_cycle(app: &mut AppView, delta: i32) ->
     // the dashboard was never opened, build a throwaway state from the persisted
     // layout (pins / reorder / grouping) so prev/next match what the user sees
     // after opening — `load_persisted` is cached on `app.dashboard_persisted`.
-    let order = match app.dashboard.as_ref() {
-        Some(d) => crate::views::dashboard::overlay_cycle_order(d, &app.agents),
-        None => {
-            // Materializing here must honor the same gates as
-            // `dispatch_open_dashboard` (feature flag AND auth), so cycling
-            // can't surface an ungated dashboard on back-out.
-            if !crate::views::dashboard::dashboard_enabled()
-                || !matches!(app.auth_state, crate::app::app_view::AuthState::Done)
-            {
-                return vec![];
+    let order = if app.workspace_dashboard_enabled {
+        app.workspace_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                crate::views::dashboard::build_rows_with_workspace(
+                    &app.agents,
+                    snapshot,
+                    crate::views::dashboard::render::cached_home(),
+                )
+                .into_iter()
+                .filter_map(|row| match row.id {
+                    DashboardRowId::TopLevel(id) if !row.is_more_placeholder => Some(id),
+                    _ => None,
+                })
+                .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        match app.dashboard.as_ref() {
+            Some(d) => crate::views::dashboard::overlay_cycle_order(d, &app.agents),
+            None => {
+                // Materializing here must honor the same gates as
+                // `dispatch_open_dashboard` (feature flag AND auth), so cycling
+                // can't surface an ungated dashboard on back-out.
+                if !crate::views::dashboard::dashboard_enabled()
+                    || !matches!(app.auth_state, crate::app::app_view::AuthState::Done)
+                {
+                    return vec![];
+                }
+                let transient = dashboard_state_from_persisted(app);
+                crate::views::dashboard::overlay_cycle_order(&transient, &app.agents)
             }
-            let transient = dashboard_state_from_persisted(app);
-            crate::views::dashboard::overlay_cycle_order(&transient, &app.agents)
         }
     };
     if order.len() <= 1 {
@@ -1739,7 +1775,7 @@ pub(super) fn dispatch_dashboard_peek_cycle_mode(app: &mut AppView) -> Vec<Effec
             }
             return vec![];
         }
-        DashboardRowId::Roster { .. } => return vec![],
+        DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => return vec![],
     };
     if !app.agents.contains_key(&agent_id) {
         if let Some(d) = app.dashboard.as_mut() {
@@ -1876,20 +1912,20 @@ pub(super) fn dispatch_dashboard_begin_rename(app: &mut AppView) {
     let Some(sel) = d.selected.clone() else {
         return;
     };
-    // Only top-level rows are renameable (subagents are tool-spawned
-    // and have no user-visible name to rename).
-    if sel.is_subagent() {
-        d.set_error_toast("Subagent rows can't be renamed");
+    let crate::views::dashboard::DashboardRowId::TopLevel(agent_id) = &sel else {
+        let message = if sel.is_subagent() {
+            "Subagent rows can't be renamed"
+        } else {
+            "Load the session before renaming"
+        };
+        d.set_error_toast(message);
         return;
-    }
-    let prefill = match &sel {
-        crate::views::dashboard::DashboardRowId::TopLevel(agent_id) => app
-            .agents
-            .get(agent_id)
-            .map(rename_prefill_title)
-            .unwrap_or_default(),
-        _ => String::new(),
     };
+    let prefill = app
+        .agents
+        .get(agent_id)
+        .map(rename_prefill_title)
+        .unwrap_or_default();
     if let Some(d) = app.dashboard.as_mut() {
         d.rename = Some(crate::views::dashboard::state::RenameDraft::new(
             sel, prefill,
@@ -1936,6 +1972,7 @@ pub(super) fn dispatch_dashboard_commit_rename(app: &mut AppView) -> Vec<Effect>
             agent.display_name = Some(title);
         }
     }
+    crate::app::workspace_sync::request(app);
     effects
 }
 
@@ -1964,16 +2001,25 @@ pub(super) fn dashboard_neighbor_row(
     } else {
         &app.dashboard_local_sessions
     };
-    let rows = crate::views::dashboard::build_rows_with_roster(
-        &app.agents,
-        &d.pinned,
-        &d.reorder,
-        None,
-        d.grouping,
-        &d.filter,
-        home,
-        roster,
-    );
+    let rows = if app.workspace_dashboard_enabled {
+        app.workspace_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                crate::views::dashboard::build_rows_with_workspace(&app.agents, snapshot, home)
+            })
+            .unwrap_or_default()
+    } else {
+        crate::views::dashboard::build_rows_with_roster(
+            &app.agents,
+            &d.pinned,
+            &d.reorder,
+            None,
+            d.grouping,
+            &d.filter,
+            home,
+            roster,
+        )
+    };
     let focusables = crate::views::dashboard::render::focusables(
         &rows,
         d.grouping,
@@ -2022,10 +2068,6 @@ pub(super) fn dispatch_dashboard_stop(app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             };
             if !crate::views::dashboard::classify_top_level(agent).allows_delete() {
-                // Busy row: stop what keeps it out of Idle — a running turn,
-                // background work (bg tasks, monitors, scheduled `/loop`s),
-                // or queued prompts. Never arms; once the row settles to
-                // idle, Ctrl+X twice deletes it.
                 let stopped = stop_top_level_activity(agent);
                 if let Some(d) = app.dashboard.as_mut() {
                     d.delete_confirm = None;
@@ -2090,6 +2132,7 @@ pub(super) fn dispatch_dashboard_stop(app: &mut AppView) -> Vec<Effect> {
                 Some(_) => arm_or_delete(app, sel),
             }
         }
+        DashboardRowId::Workspace { .. } => vec![],
     }
 }
 
@@ -2112,11 +2155,13 @@ fn stop_top_level_activity(agent: &mut crate::app::agent_view::AgentView) -> Opt
             // start_turn'd a user prompt), then a local turn. Do not
             // cancel_turn a local user turn that is only queued behind a wake.
             if agent.session.state.is_compact_running() {
-                agent.session.cancel_compact_command();
+                agent.cancel_and_arm(CancellationScope::Compaction, CancelOrigin::UserGesture);
             } else if agent.running_wake_turn.is_some() {
+                // Wake cancel only marks the shell-front stop; there is no local
+                // turn to measure, so it intentionally skips arming latency.
                 agent.mark_wake_cancel_sent();
             } else if agent.session.state.is_turn_running() {
-                agent.session.cancel_turn(&mut agent.scrollback);
+                agent.cancel_and_arm(CancellationScope::Turn, CancelOrigin::UserGesture);
             }
             agent.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::DashboardStop);
             // Stop-everything on purpose: unlike the in-pane retry, the row
@@ -2271,6 +2316,7 @@ fn delete_dashboard_row(
                 after: crate::app::actions::AfterSessionDelete::Dashboard,
             }]
         }
+        DashboardRowId::Workspace { .. } => vec![],
     }
 }
 
@@ -2297,16 +2343,25 @@ pub(super) fn dispatch_dashboard_select(app: &mut AppView, next: bool) {
     } else {
         &app.dashboard_local_sessions
     };
-    let rows = crate::views::dashboard::build_rows_with_roster(
-        &app.agents,
-        &d.pinned,
-        &d.reorder,
-        None,
-        d.grouping,
-        &d.filter,
-        home,
-        roster,
-    );
+    let rows = if app.workspace_dashboard_enabled {
+        app.workspace_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                crate::views::dashboard::build_rows_with_workspace(&app.agents, snapshot, home)
+            })
+            .unwrap_or_default()
+    } else {
+        crate::views::dashboard::build_rows_with_roster(
+            &app.agents,
+            &d.pinned,
+            &d.reorder,
+            None,
+            d.grouping,
+            &d.filter,
+            home,
+            roster,
+        )
+    };
     // Unified, display-order cursor targets: section headers AND visible
     // rows (collapsed sections contribute only their header, so their
     // hidden rows are skipped). Placeholders are excluded.
@@ -2444,7 +2499,8 @@ pub(super) fn dispatch_dashboard_permission_select(
     let target_id = match &row {
         crate::views::dashboard::DashboardRowId::TopLevel(id) => *id,
         crate::views::dashboard::DashboardRowId::Subagent { parent, .. } => *parent,
-        crate::views::dashboard::DashboardRowId::Roster { .. } => return vec![],
+        crate::views::dashboard::DashboardRowId::Roster { .. }
+        | crate::views::dashboard::DashboardRowId::Workspace { .. } => return vec![],
     };
     let Some(agent) = app.agents.get_mut(&target_id) else {
         if let Some(d) = app.dashboard.as_mut() {
@@ -2507,7 +2563,8 @@ pub(super) fn dispatch_dashboard_permission_followup(
     let target_id = match &row {
         crate::views::dashboard::DashboardRowId::TopLevel(id) => *id,
         crate::views::dashboard::DashboardRowId::Subagent { parent, .. } => *parent,
-        crate::views::dashboard::DashboardRowId::Roster { .. } => return vec![],
+        crate::views::dashboard::DashboardRowId::Roster { .. }
+        | crate::views::dashboard::DashboardRowId::Workspace { .. } => return vec![],
     };
     let Some(agent) = app.agents.get_mut(&target_id) else {
         if let Some(d) = app.dashboard.as_mut() {
@@ -2576,7 +2633,8 @@ pub(super) fn dispatch_dashboard_question_answer(
     let target_id = match &row {
         crate::views::dashboard::DashboardRowId::TopLevel(id) => *id,
         crate::views::dashboard::DashboardRowId::Subagent { parent, .. } => *parent,
-        crate::views::dashboard::DashboardRowId::Roster { .. } => return vec![],
+        crate::views::dashboard::DashboardRowId::Roster { .. }
+        | crate::views::dashboard::DashboardRowId::Workspace { .. } => return vec![],
     };
     let Some(agent) = app.agents.get_mut(&target_id) else {
         if let Some(d) = app.dashboard.as_mut() {
