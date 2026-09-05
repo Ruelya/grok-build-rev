@@ -1,6 +1,4 @@
 //! Anthropic Messages API (`/v1/messages`) wire types.
-//!
-//! These types represent the request/response format for the `/v1/messages` API.
 
 use serde::{Deserialize, Serialize};
 
@@ -135,10 +133,8 @@ pub enum ContentBlock {
         #[serde(default)]
         signature: String,
     },
-    /// Encrypted reasoning the model chose to redact. Carries only an opaque
-    /// `data` blob (never plaintext). Added so a stream that includes one
-    /// deserializes instead of failing the whole event parse; behavior-preserving
-    /// for producers (never constructed by request-building or the sampler).
+    /// Encrypted reasoning the model chose to redact: an opaque `data` blob, never plaintext.
+    /// Parsed so a stream carrying one deserializes instead of failing the whole event parse; request-building and the sampler never construct one.
     RedactedThinking {
         data: String,
     },
@@ -197,7 +193,7 @@ pub enum ThinkingConfig {
     },
     Adaptive {
         // Newer thinking-capable models omit thinking content unless display = "summarized".
-        // Older models ignore this field. Skip when None to stay back-compat.
+        // Older models ignore this field; skipping `None` keeps the old wire shape
         #[serde(skip_serializing_if = "Option::is_none")]
         display: Option<ThinkingDisplay>,
     },
@@ -241,13 +237,28 @@ pub enum StopReason {
     Refusal,
     PauseTurn,
     ModelContextWindowExceeded,
-    /// Catch-all for stop reasons this client does not know yet, so a new
-    /// server-side value can never fail the terminal `message_delta` parse
-    /// and discard an already-streamed response. Preserves the wire string
-    /// for logging and faithful re-serialization; must stay the LAST variant
-    /// (serde tries the tagged variants above first).
+    /// Catch-all so a new server-side stop reason never fails the terminal `message_delta` parse and discards an already-streamed response.
+    /// Preserves the wire string for logging and faithful re-serialization.
+    /// Must stay the LAST variant: serde tries the tagged variants above first.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl StopReason {
+    /// The verbatim wire string, derived from the serde `snake_case` renames so it cannot drift from the wire contract.
+    /// `Unknown` yields its inner string unchanged.
+    pub fn wire_str(&self) -> String {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(s)) => s,
+            other => {
+                debug_assert!(
+                    false,
+                    "StopReason must serialize to a string, got {other:?}"
+                );
+                "end_turn".to_string()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -298,11 +309,9 @@ pub enum MessageStreamEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDeltaBody {
     pub stop_reason: Option<StopReason>,
-    /// The stop sequence that was matched, present only when
-    /// `stop_reason == "stop_sequence"`; `None` otherwise. Previously discarded
-    /// at parse — captured so consumers can echo the matched string (Messages
-    /// API `message.stop_sequence`). Optional so its absence never fails the
-    /// terminal parse.
+    /// The stop sequence that was matched, present only when `stop_reason == "stop_sequence"`; `None` otherwise.
+    /// Consumers echo it on the Messages API `message.stop_sequence`.
+    /// Optional so its absence never fails the terminal parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequence: Option<String>,
     /// Provider detail for the stop; on `refusal`, `explanation` carries the
@@ -311,8 +320,7 @@ pub struct MessageDeltaBody {
     pub stop_details: Option<StopDetails>,
 }
 
-/// Detail for a terminal `message_delta`, e.g.
-/// `{"type":"refusal","category":"frontier_llm","explanation":"..."}`.
+/// Detail for a terminal `message_delta`, e.g. `{"type":"refusal","category":"frontier_llm","explanation":"..."}`.
 /// All fields optional so an unknown shape never fails the terminal parse.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StopDetails {
@@ -377,13 +385,23 @@ mod tests {
             StopReason::Unknown(s) => assert_eq!(s, "some_future_stop_reason"),
             other => panic!("unknown value must preserve the wire string, got {other:?}"),
         }
+
+        // wire_str is the inverse: known variants round-trip through the serde renames, Unknown yields its inner string unchanged
+        assert_eq!(StopReason::MaxTokens.wire_str(), "max_tokens");
+        assert_eq!(
+            StopReason::ModelContextWindowExceeded.wire_str(),
+            "model_context_window_exceeded"
+        );
+        assert_eq!(
+            StopReason::Unknown("some_future_stop_reason".to_string()).wire_str(),
+            "some_future_stop_reason"
+        );
         assert_eq!(
             serde_json::to_string(&StopReason::Unknown("some_future_stop_reason".into())).unwrap(),
             "\"some_future_stop_reason\"",
             "catch-all must re-serialize the wire string faithfully"
         );
-        // The catch-all must also work through the Option<StopReason> field
-        // it is parsed from in production.
+        // The catch-all must also work through the Option<StopReason> field it is parsed from in production
         let delta: MessageDeltaBody =
             serde_json::from_str(r#"{"stop_reason":"mystery_reason"}"#).unwrap();
         match delta.stop_reason {
@@ -392,9 +410,8 @@ mod tests {
         }
     }
 
-    /// The terminal `message_delta` of a refusal-terminated stream must parse
-    /// (the internally-tagged `MessageStreamEvent` wrapper is the actual
-    /// production parse site, hence the full-event fixture).
+    /// The terminal `message_delta` of a refusal-terminated stream must parse.
+    /// The fixture is a full event because the internally-tagged `MessageStreamEvent` wrapper is the production parse site.
     #[test]
     fn message_delta_with_refusal_stop_reason_parses() {
         let event: MessageStreamEvent = serde_json::from_str(
@@ -435,9 +452,8 @@ mod tests {
         }
     }
 
-    /// A `stop_sequence`-terminated `message_delta` must parse and preserve the
-    /// matched string (previously discarded), so consumers can echo it on the
-    /// Messages API `message.stop_sequence`.
+    /// A `stop_sequence`-terminated `message_delta` must parse and preserve the matched string.
+    /// Consumers echo it on the Messages API `message.stop_sequence`.
     #[test]
     fn message_delta_captures_matched_stop_sequence() {
         let event: MessageStreamEvent = serde_json::from_str(
@@ -465,9 +481,8 @@ mod tests {
         }
     }
 
-    /// A `redacted_thinking` content block must deserialize into the dedicated
-    /// variant (preserving the opaque `data`) instead of failing the whole
-    /// `content_block_start` parse and discarding an already-streamed response.
+    /// A `redacted_thinking` content block must deserialize into the dedicated variant, preserving the opaque `data`.
+    /// Failing the whole `content_block_start` parse would discard an already-streamed response.
     #[test]
     fn redacted_thinking_content_block_parses() {
         let event: MessageStreamEvent = serde_json::from_str(

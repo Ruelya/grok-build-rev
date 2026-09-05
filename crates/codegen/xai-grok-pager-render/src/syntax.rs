@@ -24,8 +24,7 @@ use ratatui::text::Span;
 use crate::theme::syntax_palette::SyntaxPalette;
 use crate::theme::{Theme, ThemeKind, custom};
 
-/// Convert syntect style to ratatui foreground-only style, quantized for
-/// terminal color support (or polarity-safe under the terminal-native lock).
+/// Convert syntect style to ratatui foreground-only style, quantized for terminal color support (or polarity-safe under the terminal-native lock).
 pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> Style {
     let fg = syntect_rgb_to_fg(style.foreground.r, style.foreground.g, style.foreground.b);
     let mut out = Style::default().fg(fg);
@@ -42,10 +41,7 @@ pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> Style {
     out
 }
 
-/// Map a syntect RGB triplet to a ratatui foreground color.
-///
-/// Under the terminal-native lock, uses [`polarity_safe_syntax_fg`]; otherwise
-/// quantizes via the normal theme color pipeline.
+/// Under the terminal-native lock, uses [`polarity_safe_syntax_fg`]; otherwise quantizes via the normal theme color pipeline.
 pub fn syntect_rgb_to_fg(r: u8, g: u8, b: u8) -> Color {
     if crate::theme::cache::terminal_native_locked() {
         polarity_safe_syntax_fg(r, g, b)
@@ -55,6 +51,12 @@ pub fn syntect_rgb_to_fg(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Dual-polarity-safe ANSI mapping for syntax tokens on a transparent canvas.
+///
+/// - Low chroma (gray / near-gray body text) maps to [`Color::Reset`] so the host default fg carries contrast on both light and dark profiles.
+/// - Saturated hues map to base ANSI Red/Green/Yellow/Blue/Magenta/Cyan only.
+///
+/// Never returns White, Black, or bright (Light*) variants.
+/// Those vanish on the opposite polarity after naive RGB to ANSI-16 quantization.
 pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     let max = r.max(g).max(b) as i32;
     let min = r.min(g).min(b) as i32;
@@ -74,6 +76,7 @@ pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     } else {
         (ri - gi) * 60 / chroma + 240
     };
+    // Magenta starts at 255° so Tokyo Night purple (#bb9af7, ~261°) lands Magenta rather than Blue; pure blues (~221°) stay Blue
     match h {
         0..30 | 330..=360 => Color::Red,
         30..90 => Color::Yellow,
@@ -85,6 +88,9 @@ pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Highlight a single line of source, falling back to plain text style.
+///
+/// Under the terminal-native lock, syntect tokens are remapped via [`polarity_safe_syntax_fg`].
+/// If highlighting fails, `fallback` (typically [`Theme::primary`](crate::theme::Theme::primary), which is Reset) is used.
 pub fn highlight_line(
     text: &str,
     highlighter: &mut Option<syntect::easy::HighlightLines<'_>>,
