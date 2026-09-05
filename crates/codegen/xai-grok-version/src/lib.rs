@@ -1,4 +1,4 @@
-//! Installed grok CLI version, lockstepped with shipping binaries.
+//! Installed grok CLI version, kept in sync with the shipping binaries.
 
 use std::sync::OnceLock;
 
@@ -21,9 +21,8 @@ pub fn is_fork_build() -> bool {
 /// The release pipeline always injects `GROK_VERSION`; without it the build is from source.
 pub const IS_DEV_BUILD: bool = option_env!("GROK_VERSION").is_none();
 
-/// Runtime-injected `"<version> (<shortcommit>)"` string. Only the release
-/// binary stamps the commit hash in its own build.rs and injects it here at
-/// startup, so the big lib crates don't recompile on every commit.
+/// Runtime-injected `"<version> (<shortcommit>)"` string.
+/// Only the release binary stamps the commit in its own build.rs and injects it here at startup, so the lib crates don't recompile on every commit.
 static FULL_VERSION: OnceLock<&'static str> = OnceLock::new();
 
 /// Inject the binary's stamped `"<version> (<shortcommit>)"` string.
@@ -32,14 +31,13 @@ pub fn set_full_version(v: &'static str) {
     let _ = FULL_VERSION.set(v);
 }
 
-/// The injected version-with-commit string, or plain [`VERSION`] when no
-/// binary has called [`set_full_version`] (e.g. lib tests, dev harnesses).
+/// The injected version-with-commit string, or plain [`VERSION`] when no binary has called [`set_full_version`] (e.g. lib tests, dev harnesses).
 pub fn full_version() -> &'static str {
     FULL_VERSION.get().copied().unwrap_or(VERSION)
 }
 
-/// [`TEST_VERSION_ENV`] override first, then [`VERSION`]. Trimmed so
-/// non-semver-aware callers can pass the result straight into parsing.
+/// Returns the [`TEST_VERSION_ENV`] override when set, otherwise [`VERSION`].
+/// The env value is trimmed so non-semver-aware callers can pass the result straight into parsing.
 pub fn installed() -> String {
     std::env::var(TEST_VERSION_ENV)
         .map(|v| v.trim().to_string())
@@ -67,6 +65,7 @@ pub fn display_version_with_commit(version_with_commit: &str, channel_label: &st
 mod tests {
     use super::*;
 
+    /// Checks that the channel label is appended for alpha, stable, and empty labels.
     #[test]
     fn test_display_version_formatting_matrix() {
         let cases: &[(&str, &str, &str)] = &[
@@ -77,6 +76,7 @@ mod tests {
         for (vwc, label, expected) in cases {
             assert_eq!(display_version_with_commit(vwc, label), *expected);
         }
+        // display_version uses compiled VERSION, so verify only that the label appends
         assert_eq!(display_version(""), VERSION);
         assert!(display_version(" [stable]").ends_with("[stable]"));
     }

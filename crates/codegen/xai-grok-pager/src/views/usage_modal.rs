@@ -1,10 +1,9 @@
-//! Tabbed usage / session-info modal, opened by `/usage`, `/session-info`,
-//! `/context`, and the context-bar click. Minimal mode keeps the scrollback
-//! blocks instead; this modal is never armed there.
+//! Tabbed usage and session-info modal, opened by `/usage`, `/session-info`, `/context`, and the context-bar click.
+//! Minimal mode keeps the scrollback blocks instead; this modal never opens there.
 //!
-//! The Session-info tab supports click-to-copy on value rows (with hover) and in-app
-//! drag-select after a movement threshold; `c` / `y` stay as programmatic copy. The modal
-//! opens with loading placeholders; the task-result handlers fill the slots in as the fetches land.
+//! The Session-info tab supports click-to-copy on value rows (with hover) and in-app drag-select after a movement threshold.
+//! `c` and `y` stay as programmatic copy.
+//! The modal opens with loading placeholders; the task-result handlers fill the slots in as the fetches land.
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -80,9 +79,8 @@ pub struct UsageInfoContext {
     pub subscription_tier: Option<String>,
 }
 
-/// Modal state. Billing figures are NOT stored here — the render reads the
-/// agent's cached `credit_balance` mirror, so a silent billing refresh
-/// updates the open modal for free.
+/// Modal state. Billing figures are NOT stored here.
+/// The render reads the agent's cached `credit_balance` mirror, so a silent billing refresh updates the open modal for free.
 pub struct UsageInfoModalState {
     pub window: ModalWindowState,
     pub active_tab: UsageInfoTab,
@@ -90,16 +88,14 @@ pub struct UsageInfoModalState {
     pub ctx: UsageInfoContext,
     pub context: Option<ContextInfoBlock>,
     pub context_error: Option<String>,
-    /// Structured `/session-info` rows, built upstream from typed session data
-    /// (never by re-parsing a formatted string).
+    /// Structured `/session-info` rows, built upstream from typed session data (never by re-parsing a formatted string).
     pub session_fields: Option<Vec<SessionInfoField>>,
     pub session_error: Option<String>,
     /// Pre-formatted session token/cost summary (`session_usage_block_text`).
     pub session_usage_text: Option<String>,
     pub billing_loading: bool,
     pub billing_error: Option<String>,
-    /// Fetch generation stamped at open; results from an earlier open (same
-    /// session, modal reopened) are dropped instead of overwriting.
+    /// Fetch generation stamped at open; results from an earlier open (same session, modal reopened) are dropped instead of overwriting.
     pub fetch_nonce: u64,
     /// Hit rect of the visible "Session ID" row (click-to-copy), refreshed
     /// every render.
@@ -118,10 +114,9 @@ pub struct UsageInfoModalState {
     text_drag: Option<TextDrag>,
 }
 
-/// One labeled Session-info row, built upstream from typed session data. The
-/// modal renders and copies straight from these — it never parses a formatted
-/// string. `compact` selects the dense `Label: value` layout for the
-/// model/runtime group.
+/// One labeled Session-info row, built upstream from typed session data.
+/// The modal renders and copies straight from these; it never parses a formatted string.
+/// `compact` selects the dense `Label: value` layout for the model/runtime group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfoField {
     pub label: &'static str,
@@ -247,11 +242,9 @@ impl UsageInfoModalState {
     }
 
     /// Finish an active drag whose `Up(Left)` never arrived (bare `Moved`).
-    /// Unlike scrollback recovery (which discards), a non-empty drag still
-    /// copies so the selection band does not vanish empty-handed. Pending
-    /// press is left alone: it paints nothing, the next Down overwrites it,
-    /// and clearing it would drop click-to-copy on terminals that report
-    /// held motion as `Moved`.
+    /// Unlike scrollback recovery (which discards), a non-empty drag still copies, so the selection band does not vanish without copying.
+    /// The pending press is left alone: it paints nothing and the next Down overwrites it.
+    /// Clearing it would drop click-to-copy on terminals that report held motion as `Moved`.
     pub(crate) fn finish_lost_drag(&mut self) -> UsageModalOutcome {
         let outcome = if let Some(drag) = self.text_drag.take()
             && drag.is_non_empty()
@@ -265,9 +258,8 @@ impl UsageInfoModalState {
         outcome
     }
 
-    /// The full Session-info block as one readable, clipboard-friendly string
-    /// (`Label: value` lines). Returns `None` unless the Session info tab is
-    /// active and its rows have loaded.
+    /// The full Session-info block as one readable, clipboard-friendly string (`Label: value` lines).
+    /// Returns `None` unless the Session info tab is active and its rows have loaded.
     pub fn session_info_copy_all(&self) -> Option<String> {
         if self.active_tab != UsageInfoTab::SessionInfo {
             return None;
@@ -298,7 +290,7 @@ impl UsageInfoModalState {
 /// clicks, footer clicks) are handled by the caller via `modal_window`.
 #[derive(Debug)]
 pub enum UsageModalOutcome {
-    /// Copy the session ID to the clipboard (caller owns clipboard + toast).
+    /// Copy the session ID to the clipboard (the caller owns clipboard and toast).
     /// Emitted by the `c` shortcut and the footer button.
     CopySessionId,
     /// Activity tab produced a dispatch action (sync / rescan / open config).
@@ -330,7 +322,7 @@ pub fn handle_usage_modal_key(
     key: &KeyEvent,
 ) -> UsageModalOutcome {
     use crossterm::event::KeyModifiers;
-    // BackTab / `G` legitimately carry SHIFT; reject only real chords.
+    // BackTab and `G` legitimately carry SHIFT; reject only real chords
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
@@ -457,7 +449,7 @@ pub fn handle_usage_modal_mouse(
             let Some(ep) = endpoint_at(state, column, row) else {
                 return UsageModalOutcome::Unchanged;
             };
-            // Hold the press; promote to drag only after a 1-cell move (scrollback).
+            // Hold the press; promote to drag only after a 1-cell move (same threshold as scrollback)
             state.pending_press = Some(PendingPress {
                 start_col: column,
                 start_row: row,
@@ -661,7 +653,7 @@ pub fn render_usage_modal(
         }
     }
     .with_compact(compact);
-    // No border title — the tab bar is the header, as in the extensions modal.
+    // No border title; the tab bar is the header, as in the extensions modal
     let config = ModalWindowConfig {
         title: "",
         tabs: Some(&labels),
@@ -780,8 +772,7 @@ fn col_at_char_start(text: &str, col: u16) -> u16 {
     grapheme_cells_at(text, col).map_or(col, |cells| cells.start)
 }
 
-/// Display-column range `[lo, hi)` for one line of a drag, clamped to the panel
-/// width so copy and highlight cover the same characters.
+/// Display-column range `[lo, hi)` for one line of a drag, clamped to the panel width so copy and highlight cover the same characters.
 fn selection_cols(
     drag: TextDrag,
     line_idx: usize,
@@ -996,7 +987,7 @@ fn allowance_lines(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // "Weekly limit" / "Monthly limit" / "Usage", plus the plan name.
+    // "Weekly limit", "Monthly limit", or "Usage", plus the plan name
     let header = match &state.ctx.subscription_tier {
         Some(tier) => format!("{} ({tier})", bal.usage_label()),
         None => bal.usage_label().to_string(),
@@ -1027,7 +1018,7 @@ fn allowance_lines(
         lines.push(muted_line(theme, format!("Resets: {reset}")));
     }
 
-    // Prepaid credits (stored as negative cents — accounting convention).
+    // Prepaid credits (stored as negative cents, an accounting convention)
     if let Some(prepaid) = bal.prepaid_balance_cents.map(i64::abs).filter(|c| *c > 0) {
         lines.push(Line::default());
         lines.push(plain(
@@ -1240,7 +1231,7 @@ mod tests {
         let lines = usage_limit_lines(&state, None, &theme);
         assert!(lines[0].to_string().contains("managed by your team"));
 
-        // Gateway chat sessions surface no billing at all.
+        // Gateway chat sessions show no billing at all
         state.ctx.chat_kind = true;
         let lines = usage_limit_lines(&state, None, &theme);
         assert!(lines[0].to_string().contains("Loading session usage"));
@@ -1390,7 +1381,7 @@ mod tests {
             handle_usage_modal_mouse(&mut state, MouseEventKind::Down(MouseButton::Left), x0, y,),
             UsageModalOutcome::Changed
         );
-        // Same-cell drag stays pending (no promote).
+        // Same-cell drag stays pending (not promoted)
         assert_eq!(
             handle_usage_modal_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), x0, y,),
             UsageModalOutcome::Unchanged
@@ -1521,7 +1512,7 @@ mod tests {
             hit.rect.y,
         );
         assert!(state.text_drag.is_some());
-        // Bare Moved = Up was lost off-terminal; finish like Up (copy + clear).
+        // Bare Moved means the Up was lost off-terminal; finish like Up (copy and clear)
         let out = handle_usage_modal_mouse(&mut state, MouseEventKind::Moved, x0 + 4, hit.rect.y);
         assert!(
             matches!(out, UsageModalOutcome::CopyText(ref s) if s.starts_with("fp")),
@@ -1547,7 +1538,7 @@ mod tests {
             hit.rect.y,
         );
         assert!(state.pending_press.is_some());
-        // Moved must not clear pending (held-as-Moved terminals must still click).
+        // Moved must not clear pending; terminals that report held motion as Moved must still click
         let _ = handle_usage_modal_mouse(&mut state, MouseEventKind::Moved, hit.rect.x, hit.rect.y);
         assert!(state.pending_press.is_some());
         assert!(state.text_drag.is_none());
