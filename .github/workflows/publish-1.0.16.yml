@@ -1,0 +1,205 @@
+# One-time publication of the verified 1.0.16-rev build.
+name: publish-1.0.16-rev
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-1.0.16.yml]
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+concurrency:
+  group: publish-1.0.16-rev
+  cancel-in-progress: false
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve build run
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RUN: 33959421429
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_RUN// }" ]]; then
+            RID="${INPUT_RUN// /}"
+          else
+            RID=$(gh run list -R "${{ github.repository }}" \
+              --workflow build.yml --branch "${{ github.ref_name }}" \
+              --status success --limit 1 --json databaseId \
+              --jq '.[0].databaseId // empty')
+            if [[ -z "$RID" ]]; then
+              echo "::error::No successful build.yml run on ${{ github.ref_name }}"
+              exit 1
+            fi
+          fi
+          echo "run_id=$RID" >> "$GITHUB_OUTPUT"
+          echo "Using build run $RID"
+          test "$(gh api repos/${{ github.repository }}/actions/runs/$RID --jq '.conclusion')" = success
+          test "$(gh api repos/${{ github.repository }}/actions/runs/$RID --jq '.head_sha')" = ab0c0f7fd1fbfe7b16fe5f0d7e7a4c1bb343ccb7
+          gh run view "$RID" -R "${{ github.repository }}" \
+            --json status,conclusion,headSha,url \
+            --jq '"status=\(.status) conclusion=\(.conclusion) sha=\(.headSha) url=\(.url)"'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.src.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+
+      - name: Check assets
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -la
+          for need in grok-win32-x64.exe grok-linux-x64 grok-linux-arm64 grok-darwin-arm64; do
+            test -f "$need"
+            SIZE=$(wc -c < "$need" | tr -d ' ')
+            echo "$need size=$SIZE"
+            if [[ "$SIZE" -lt 1000000 ]]; then
+              echo "::error::$need too small ($SIZE)"
+              exit 1
+            fi
+            chmod +x "$need" || true
+          done
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: 1.0.16-rev
+          RID: ${{ steps.src.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          TAG="v${VER}"
+          NOTES=$(mktemp)
+          cat > "$NOTES" <<EOF
+          ## grok-build-rev ${TAG}
+
+          Product version tracks official Grok Build as **${VER}**.
+
+          ### Binaries
+          | Asset | Platform |
+          |-------|----------|
+          | \`grok-win32-x64.exe\` | Windows x64 |
+          | \`grok-linux-x64\` | Linux x64 |
+          | \`grok-linux-arm64\` | Linux arm64 (generic CPU baseline) |
+          | \`grok-darwin-arm64\` | macOS Apple Silicon |
+
+          ### Install
+          \`\`\`bash
+          npm install -g @ruelya/grok-build@${VER}
+          npx grok-build install
+          \`\`\`
+
+          Built from [Actions run ${RID}](https://github.com/${{ github.repository }}/actions/runs/${RID}).
+          EOF
+          if gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::Release already exists; refusing to replace it"
+            exit 1
+          fi
+          gh release create "$TAG" \
+            -R "${{ github.repository }}" \
+            --target ab0c0f7fd1fbfe7b16fe5f0d7e7a4c1bb343ccb7 \
+            --title "${TAG} (upstream product + -rev)" \
+            --notes-file "$NOTES" \
+            dist/grok-win32-x64.exe \
+            dist/grok-linux-x64 \
+            dist/grok-linux-arm64 \
+            dist/grok-darwin-arm64
+          rm -f "$NOTES"
+          gh release view "$TAG" -R "${{ github.repository }}" \
+            --json tagName,url,assets --jq '{tag:.tagName,url:.url,assets:[.assets[].name]}'
+  npm:
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          scope: "@ruelya"
+
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Prepare thin package
+        working-directory: npm
+        env:
+          VER: 1.0.16-rev
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${{ github.repository }}/releases/download/v${VER}"
+          # Verify release assets exist
+          for need in grok-win32-x64.exe grok-linux-x64 grok-linux-arm64 grok-darwin-arm64; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -L -r 0-0 "${BASE}/${need}" || true)
+            echo "$need → HTTP $code"
+            if [[ "$code" != "200" && "$code" != "206" ]]; then
+              echo "::error::Missing release asset ${BASE}/${need}"
+              exit 1
+            fi
+          done
+          VER="$VER" BASE="$BASE" node -e '
+            const fs=require("fs");
+            const p=JSON.parse(fs.readFileSync("package.json","utf8"));
+            p.name="@ruelya/grok-build";
+            p.version=process.env.VER;
+            p.forkReleaseBase=process.env.BASE;
+            p.publishConfig={access:"public",registry:"https://registry.npmjs.org/"};
+            p.files=(p.files||[]).filter(f=>!String(f).includes("artifacts/bin"));
+            fs.writeFileSync("package.json", JSON.stringify(p,null,2)+"\n");
+            console.log(p.name, p.version, p.forkReleaseBase);
+          '
+          mkdir -p artifacts
+          rm -rf artifacts/bin artifacts/cache
+          echo "version=${VER}" > artifacts/BUILD_INFO.txt
+          echo "release=${BASE}" >> artifacts/BUILD_INFO.txt
+          npm pack
+          SIZE=$(wc -c < ./*.tgz | tr -d ' ')
+          echo "tgz size=$SIZE"
+          if [[ "$SIZE" -gt 10485760 ]]; then
+            echo "::error::tarball too large"
+            exit 1
+          fi
+          rm -f ./*.tgz
+
+      - name: npm publish
+        working-directory: npm
+        env:
+          # Prefer Automation token (repo secret NPM_TOKEN). OIDC Trusted
+          # Publisher alone returned ENEEDAUTH on this package.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::Missing secret NPM_TOKEN (npm Automation token required for agent-driven release)"
+            exit 1
+          fi
+          VER=$(node -p "require('./package.json').version")
+          # Prerelease versions (e.g. 1.0.1-rev) require an explicit dist-tag.
+          # Publish as `latest` so `npm i -g @ruelya/grok-build` picks them up.
+          EXTRA_TAG=()
+          if [[ "$VER" == *-* ]]; then
+            EXTRA_TAG=(--tag latest)
+            echo "prerelease $VER → --tag latest"
+          fi
+          # --provenance needs OIDC; try with, fall back without if token path
+          set +e
+          out=$(npm publish --access public --provenance "${EXTRA_TAG[@]}" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [[ $code -ne 0 ]]; then
+            if echo "$out" | grep -qiE 'provenance|OIDC|id-token'; then
+              echo "retry without --provenance"
+              npm publish --access public "${EXTRA_TAG[@]}"
+            else
+              exit "$code"
+            fi
+          fi
+          echo "Published @ruelya/grok-build@$VER"
