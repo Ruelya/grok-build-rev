@@ -249,6 +249,7 @@ fn theme_from_kind(kind: ThemeKind) -> Theme {
         ThemeKind::TokyoNight => Theme::tokyonight(),
         ThemeKind::RosePineMoon => Theme::rosepine_moon(),
         ThemeKind::OscuraMidnight => Theme::oscura_midnight(),
+        ThemeKind::Terminal => Theme::terminal(),
         ThemeKind::Auto => Theme::groknight(),
     }
 }
