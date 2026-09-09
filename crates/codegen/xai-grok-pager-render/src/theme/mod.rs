@@ -354,9 +354,10 @@ impl Theme {
         let effective = Self::clamp_to_terminal(kind);
         cache::set(effective);
         // Invalidate syntax palette cache and notify scrollback to re-style.
+        // Cursor color is emitted by the event-loop OSC 12 tracker, not here —
+        // `apply_kind` runs on that thread and must not take the stderr lock.
         crate::syntax::invalidate_palette_cache();
         cache::bump_generation();
-        apply_cursor_color();
         effective
     }
 
@@ -370,8 +371,8 @@ impl Theme {
             crate::syntax::invalidate_palette_cache();
             // Custom themes do not change ThemeKind — generation is how
             // MarkdownContent / edit HL detect the flip for live re-render.
+            // Cursor color is emitted by the event-loop OSC 12 tracker.
             cache::bump_generation();
-            apply_cursor_color();
             true
         } else {
             false
