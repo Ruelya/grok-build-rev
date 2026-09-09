@@ -982,6 +982,7 @@ async fn recap_request_uses_models_recap_override() {
                 "cheap-summary",
                 ModelEntry {
                     info,
+                    mtls_cert_dir: None,
                     api_key: Some("test-key".into()),
                     env_key: None,
                     auth_provider: None,

@@ -2581,7 +2581,11 @@ mod tests {
     use xai_grok_shell::agent::config::DEFAULT_AGENT_TYPE;
     #[test]
     fn build_agent_list_includes_every_subagent_variant() {
-        let list = build_agent_list(Path::new("/tmp/no-project-agents-modal"), &HashMap::new());
+        let list = build_agent_list(
+            Path::new("/tmp/no-project-agents-modal"),
+            &HashMap::new(),
+            None,
+        );
         let builtin_names: std::collections::HashSet<&str> = list
             .iter()
             .filter(|e| e.is_builtin)
