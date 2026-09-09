@@ -7,11 +7,18 @@
 //! `[syntax]` in their TOML; otherwise roles are derived from UI/markdown
 //! colors.
 //!
-//! ## Minimal / terminal-native lock
+//! ## Terminal-native palette (minimal lock + `terminal` theme)
 //!
-//! While [`crate::theme::cache::terminal_native_locked`] is set, chrome uses
-//! [`Theme::terminal_default`](crate::theme::Theme::terminal_default) and
-//! token colors are remapped via [`polarity_safe_syntax_fg`].
+//! While [`crate::theme::cache::terminal_native_active`] holds (minimal mode's
+//! lock, or the `Terminal` kind), chrome uses
+//! [`Theme::terminal_default`](crate::theme::Theme::terminal_default) /
+//! [`Theme::terminal`](crate::theme::Theme::terminal) and token colors are
+//! remapped via [`polarity_safe_syntax_fg`].
+//!
+//! Builtin and custom themes still go through the palette → syntect pipeline.
+//! On the terminal-native palette we do **not** detect light/dark. Instead:
+//! 1. Near-gray tokens become `Color::Reset` (terminal default fg; always readable).
+//! 2. Chromatic tokens map to base ANSI-16 accents, never White/Black/bright variants.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -41,22 +48,19 @@ pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> Style {
     out
 }
 
-/// Under the terminal-native lock, uses [`polarity_safe_syntax_fg`]; otherwise quantizes via the normal theme color pipeline.
+/// Map a syntect RGB triplet to a ratatui foreground color.
+///
+/// On the terminal-native palette, uses [`polarity_safe_syntax_fg`]; otherwise quantizes via the normal theme color pipeline.
 pub fn syntect_rgb_to_fg(r: u8, g: u8, b: u8) -> Color {
-    if crate::theme::cache::terminal_native_locked() {
+    if crate::theme::cache::terminal_native_active() {
         polarity_safe_syntax_fg(r, g, b)
     } else {
         crate::theme::quantize(Color::Rgb(r, g, b))
     }
 }
 
-/// Dual-polarity-safe ANSI mapping for syntax tokens on a transparent canvas.
-///
-/// - Low chroma (gray / near-gray body text) maps to [`Color::Reset`] so the host default fg carries contrast on both light and dark profiles.
-/// - Saturated hues map to base ANSI Red/Green/Yellow/Blue/Magenta/Cyan only.
-///
-/// Never returns White, Black, or bright (Light*) variants.
-/// Those vanish on the opposite polarity after naive RGB to ANSI-16 quantization.
+/// Low-chroma tokens use [`Color::Reset`] so host fg keeps contrast on both polarities.
+/// Saturated hues map to base ANSI only — never White, Black, or Light*, which vanish on the opposite polarity.
 pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     let max = r.max(g).max(b) as i32;
     let min = r.min(g).min(b) as i32;
@@ -87,10 +91,8 @@ pub fn polarity_safe_syntax_fg(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
-/// Highlight a single line of source, falling back to plain text style.
-///
 /// Under the terminal-native lock, syntect tokens are remapped via [`polarity_safe_syntax_fg`].
-/// If highlighting fails, `fallback` (typically [`Theme::primary`](crate::theme::Theme::primary), which is Reset) is used.
+/// Highlight failure uses `fallback` (typically Reset) so contrast is not lost.
 pub fn highlight_line(
     text: &str,
     highlighter: &mut Option<syntect::easy::HighlightLines<'_>>,

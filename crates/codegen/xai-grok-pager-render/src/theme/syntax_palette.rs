@@ -58,7 +58,9 @@ impl SyntaxPalette {
             super::ThemeKind::TokyoNight => Self::from_ui_theme(&Theme::tokyonight()),
             super::ThemeKind::RosePineMoon => Self::from_ui_theme(&Theme::rosepine_moon()),
             super::ThemeKind::OscuraMidnight => Self::from_ui_theme(&Theme::oscura_midnight()),
-            super::ThemeKind::GrokNight | super::ThemeKind::Auto => {
+            // Terminal remaps every token in `syntect_rgb_to_fg`; source palette
+            // only has to be a full one — polarity is irrelevant.
+            super::ThemeKind::GrokNight | super::ThemeKind::Auto | super::ThemeKind::Terminal => {
                 Self::from_ui_theme(&Theme::groknight())
             }
         }
