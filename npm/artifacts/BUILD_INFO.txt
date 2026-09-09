@@ -1,4 +1,5 @@
-product=1.0.16-rev
-upstream=1.0.16
-packaging=1.0.16-rev
-release=https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.16-rev
+product=1.0.24-rev
+upstream=1.0.24
+packaging=1.0.24-rev
+release=https://github.com/Ruelya/grok-build-rev/releases/download/v1.0.24-rev
+source_rev=eb4a894da8fb7bcd8d8f398a9d909a7868a4fcf1
